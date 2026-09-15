@@ -33,3 +33,6 @@ firebase/.firebase/
 
 # macOS
 .DS_Store
+
+# Owner-only setup script (names the App Store Connect key)
+owner-setup.ps1
