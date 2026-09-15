@@ -1,0 +1,25 @@
+{
+  "name": "familymap-functions",
+  "version": "1.0.0",
+  "private": true,
+  "description": "FamilyMap Cloud Functions (check-in + SOS push, account cleanup)",
+  "main": "lib/index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "serve": "npm run build && firebase emulators:start --only functions,firestore",
+    "deploy": "firebase deploy --only functions",
+    "logs": "firebase functions:log",
+    "test": "npm run build && node --test test/checkin.test.mjs test/places.test.mjs test/sos.test.mjs test/token.test.mjs"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.7.0",
+    "firebase-functions": "^6.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

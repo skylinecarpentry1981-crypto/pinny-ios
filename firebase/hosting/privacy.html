@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pinny Privacy Policy</title>
+<!-- Source of truth: docs/BACKEND-SETUP.md §9. Replace SUPPORT_EMAIL before deploying. -->
+<style>
+  :root { color-scheme: light dark; --fg: #1d1d1f; --muted: #5f5f66; --bg: #ffffff; --line: #e3e3e8; --accent: #0a66d8; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #f2f2f7; --muted: #a1a1aa; --bg: #111114; --line: #2c2c31; --accent: #5aa2ff; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { max-width: 42rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.2rem; margin: 2.25rem 0 .5rem; }
+  p, li { color: var(--fg); }
+  ul { padding-left: 1.25rem; }
+  li { margin: .35rem 0; }
+  .muted { color: var(--muted); }
+  .summary { border-left: 3px solid var(--accent); padding: .25rem 0 .25rem 1rem; margin: 1.5rem 0; }
+  a { color: var(--accent); }
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--line); font-size: .9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Pinny Privacy Policy</h1>
+  <p class="muted">Last updated: 15 September 2026</p>
+
+  <div class="summary">
+    <p>Pinny is a location-sharing app for your family only. Your location is shared with your family only when you open Pinny, tap Refresh or Check in, or send an SOS. There is no background tracking and no location history. We don't show ads, we don't track you across other apps, and we don't sell your data.</p>
+  </div>
+
+  <h2>What we collect</h2>
+  <ul>
+    <li><strong>Account:</strong> your name, your email address (from email sign-in, or from Sign in with Apple, which may be a private relay address), a user ID, and a profile photo link if your account has one.</li>
+    <li><strong>Location:</strong> your most recently shared location (coordinates and how accurate they are), the time it was shared, and what triggered it (opening the app, Refresh or Check in, or SOS).</li>
+    <li><strong>Battery:</strong> your battery level and whether your phone is charging, captured at the same moment as your location.</li>
+    <li><strong>Family:</strong> your family's name, its invite code and its list of members.</li>
+    <li><strong>Saved places:</strong> places your family adds, such as Home or School: a name, an icon, a centre point and a radius.</li>
+    <li><strong>Chat:</strong> messages you send in your family chat, including SOS messages.</li>
+    <li><strong>Notifications:</strong> a push notification token for your phone, so Pinny can send you notifications.</li>
+  </ul>
+  <p>We don't collect your contacts, photos, advertising identifier or browsing activity, and Pinny contains no analytics or advertising tools.</p>
+
+  <h2>When your location is collected</h2>
+  <p>Only in the moment you open Pinny (or bring it back on screen), tap Refresh or Check in, or send an SOS. Pinny asks for location access only "While Using the App". It never collects your location in the background, and saved places are only used to label a location you have already shared. Nothing is monitored.</p>
+
+  <h2>Who can see it</h2>
+  <ul>
+    <li><strong>Your family only.</strong> Your location, battery, saved places and chat are visible only to members of your family, and our database security rules enforce this. Saved places are visible to your family only.</li>
+    <li>When you leave a family, your family can no longer see your location from that moment, and you can no longer see theirs.</li>
+    <li>We don't share your data with advertisers or data brokers.</li>
+  </ul>
+
+  <h2>Services that process your data</h2>
+  <ul>
+    <li><strong>Google Firebase</strong> stores the data in Sydney, Australia, handles sign-in, runs the notification logic and sends push notifications (Firebase Cloud Messaging).</li>
+    <li><strong>Apple</strong> delivers push notifications and provides Sign in with Apple. Street names shown under a family member's pin are looked up on your phone using Apple's maps service, which sends the coordinates to Apple. Place search text is sent to Apple to find addresses. We don't store street addresses or your searches.</li>
+    <li>Notifications can include a family member's name and the name of a saved place (for example "At Home."), but never coordinates or a map link. They pass through Google and Apple to reach your family's phones but are not stored by us.</li>
+  </ul>
+
+  <h2>How long we keep it</h2>
+  <ul>
+    <li>We keep only your <strong>latest</strong> location. Each new share replaces the previous one. There is no history, and we don't keep backup copies of your location.</li>
+    <li>Your account data is kept until you delete your account.</li>
+    <li>Chat messages and saved places belong to the family. They stay when a member leaves or deletes their account, and they are deleted when the last member leaves the family.</li>
+    <li>To show the map quickly, Pinny keeps a copy of your family's latest locations on your phone until newer ones replace them or you delete the app.</li>
+  </ul>
+
+  <h2>Deleting your account</h2>
+  <p>Delete your account at any time in Pinny: Settings &rarr; Delete account. This deletes your account and your location data, including battery and accuracy, and removes you from your family. Messages you sent and places you saved stay with your family, as explained above.</p>
+
+  <h2>Your choices</h2>
+  <ul>
+    <li>Turn off location access for Pinny in the iOS Settings app at any time.</li>
+    <li>Turn off check-in notifications in Pinny's Settings, or all notifications in iOS Settings.</li>
+    <li>Leave your family at any time.</li>
+  </ul>
+
+  <h2>Security</h2>
+  <p>Data is sent over encrypted connections and stored by Google Firebase, which encrypts stored data. Access is limited to you and your family by our security rules.</p>
+
+  <h2>Children</h2>
+  <p>Pinny is designed for families. If a child uses Pinny, a parent or guardian should set it up and supervise its use.</p>
+
+  <h2>Changes to this policy</h2>
+  <p>If we change how Pinny handles your data, we will update this page and the date at the top.</p>
+
+  <h2>Contact</h2>
+  <p>For questions, a copy of your data, a correction or a complaint, email <a href="mailto:SUPPORT_EMAIL">SUPPORT_EMAIL</a>.</p>
+
+  <footer class="muted"><a href="/support">Support</a></footer>
+</main>
+</body>
+</html>

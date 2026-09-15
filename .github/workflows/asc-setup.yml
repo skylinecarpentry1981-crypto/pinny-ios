@@ -1,0 +1,55 @@
+# App Store Connect setup for Pinny (Path A in docs/TESTFLIGHT.md).
+# Registers com.skyline.pinny, enables Push / Sign in with Apple / Time
+# Sensitive Notifications, counts registered devices, and prints the app's
+# numeric Apple ID (or "APP RECORD MISSING"). With tester_email it also adds
+# that App Store Connect user to the internal TestFlight group "Owner".
+# Safe to run any number of times.
+#
+#   gh workflow run asc-setup.yml -R skylinecarpentry1981-crypto/pinny-ios
+#   gh workflow run asc-setup.yml -R skylinecarpentry1981-crypto/pinny-ios -f tester_email=you@example.com
+#
+# Script: scripts/asc_setup.py. Secrets: ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8.
+
+name: App Store Connect setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      tester_email:
+        description: "Optional: Apple ID email of an App Store Connect user to add to the internal TestFlight group 'Owner'"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: asc-setup
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    name: Bundle ID, capabilities, app record
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install Python packages
+        run: python -m pip install --disable-pip-version-check --quiet "PyJWT>=2.8,<3" "cryptography>=42" "requests>=2.31,<3"
+
+      - name: Run App Store Connect setup
+        shell: bash
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          # Passed through env (not inlined into the script) so the input
+          # can't inject shell commands.
+          TESTER_EMAIL: ${{ inputs.tester_email }}
+        run: python scripts/asc_setup.py setup --tester-email "$TESTER_EMAIL"

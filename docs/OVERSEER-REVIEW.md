@@ -1,0 +1,635 @@
+OVERSEER REVIEW — Stage 1: Scaffolding (re-review after fixes)
+Result: PASS
+(All 9 should-fix items from the first review are resolved. No blockers. Two nits below are informational; none require another round.)
+
+Issues (if RETURN):
+None blocking. Nits for the stage-2/3 builders:
+1. `LocationPoint.updatedAt` is a client-set `Date`; BACKEND-SETUP.md:185 says `serverTimestamp`. Rules accept either (`validLocation` only checks `is timestamp`), but the check-in debounce in `onLocationUpdated` (index.ts:157) compares these values, so a skewed device clock can skip or double a push → FamilyMap/Core/Models/LocationPoint.swift:8 → when stage 3 writes `lastLocation`, use `FieldValue.serverTimestamp()` for `updatedAt` (or `@ServerTimestamp var updatedAt: Date?` on the model)   [severity: nit]
+2. project.yml could not be machine-parsed here (no YAML parser on this Windows box); it was checked by eye and is well-formed. First `xcodegen generate` on the Mac is the real confirmation   [severity: nit — verify on Mac]
+
+Checked OK (changed areas only):
+- Models: `Family` now has `createdBy: String` and `@ServerTimestamp var createdAt: Date?`; `AppUser` has `@ServerTimestamp var updatedAt: Date?` (property-wrapped optional, implicitly nil in the custom init); `ChatMessage.createdAt` is `@ServerTimestamp Date?`. All three files `import FirebaseFirestore`, which provides `@ServerTimestamp` in SDK 11. Grep of `createdAt`/`updatedAt` call sites: the only non-model reader is `MessageBubble.swift:42`, which unwraps with `?? Date()`. Shapes now match rules (`createdAt == request.time`, `updatedAt is timestamp`, `createdBy == uid()`) and BACKEND-SETUP §6.
+- Collection paths / TODOs: `ChatMessage.swift:9` and `ChatService.swift:20` now say `chats/{familyId}/messages`; `FamilyService.swift:35-45` describes the create batch (family + inviteCodes + users merge, with createdBy/serverTimestamp) and the join flow via `get inviteCodes/{code}`, with an explicit "never query families by inviteCode" note.
+- Theme / assets: `Color("SOSRed")` ↔ `FamilyMap/Resources/Assets.xcassets/SOSRed.colorset` (exact name match, Any #D0021B / Dark #FF3B30); AccentColor is now #1E7A5A / #3DBF8E per DESIGN-SPEC §5. Hex component strings are valid asset-catalog format.
+- FamilyView: destructive "Leave family" row + `.confirmationDialog(_:isPresented:titleVisibility:actions:message:)` (iOS 15+ signature, correct) with spec copy and a `TODO(stage 6)`; Settings gear unchanged.
+- MainTabView icons `map.fill` / `bubble.left.and.bubble.right.fill` / `person.2.fill`; MapView hides the nav-bar background (`.toolbarBackground(.hidden, for: .navigationBar)`, iOS 16) and uses `location.fill`; member-detail card carries a `TODO(stage 3)` for the sheet.
+- SettingsView: Notifications section with `Section { } header: { } footer: { }` (iOS 15+), "SOS alerts – Always" row, Privacy footnote with the spec's exact string, version footer from `Bundle.main.infoDictionary`. WelcomeView: "Sign in with email" link and Terms · Privacy caption (`Color(uiColor: .tertiaryLabel)` resolves via SwiftUI's UIKit re-export). SOSConfirmSheet copy unchanged and honest.
+- project.yml: `NSLocationWhenInUseUsageDescription` is now the DESIGN-SPEC §6 exact string; entitlements gained `com.apple.developer.usernotifications.time-sensitive: true` (dotted key is a plain YAML scalar, fine); everything else unchanged and structurally valid.
+- firestore.rules: families delete now requires `createdBy == uid() && (members.size() == 0 || members == [uid()])`; inviteCodes delete mirrors it via pre-batch `exists()` + `get()` on `familyPath(resource.data.familyId)`. In a single batch that deletes both the family and its code, `get()` still sees the family (pre-batch state) so the batch succeeds; if the family is already gone, `exists()` is false and `&&` short-circuits, so the rule denies cleanly rather than erroring. Repeated `get()` on the same path counts as one read. Orphaned codes (family deleted without its code) are harmless: a later create on that code id fails and the client regenerates; a joiner's update on the missing family fails. `onUserDeleted` bypasses rules and deletes the code itself on the purge path.
+- Functions: `onUserDeleted` now returns the purge decision from `runTransaction` (no `never`-cast), reassigns `createdBy` to `remaining[0]` when the creator's account is deleted, and only runs `recursiveDelete` when `familyPurged && familyId`. `npx tsc --noEmit` passes locally with `strict` + `noUnusedLocals`.
+- Docs: `tekton-88f8e` removed (only remaining mention is this review's history); BACKEND-SETUP §1 step 5 no longer tells the reader to add an existing .gitignore line; §7 leave/delete row matches the new delete rule; DESIGN-SPEC now has L/E/X lines for Member Detail (3.4) and Notification Priming (3.9) and the stage count reads "6 build stages"; README links Design spec, Backend setup, Build plan (`docs/BUILD-PLAN.md` exists) and the `firebase/` deploy steps.
+- Secrets grep (`AIza`, `.p8`, `tekton-88f8e`, `DEVELOPMENT_TEAM`): only placeholders and doc prose remain; `GoogleService-Info.plist` still gitignored.
+
+
+================================================================================
+OVERSEER REVIEW — Stage 2: Authentication + Family group
+Result: RETURN
+(No compile-breakers found by reading. 1 runtime blocker, 2 spec blockers, 4 should-fix, rest nits. All fixes are small and local; one round should close it.)
+
+Issues:
+1. Fresh install / signed-out launch never leaves the spinner. `handleAuthChange` early-returns when `uid == observedUid`; `observedUid` starts nil and Firebase's `addStateDidChangeListener` fires immediately with `user == nil`, so the very first callback is swallowed and `authState` stays `.loading` — RootView shows `LoadingView` forever and Welcome is unreachable → FamilyMap/Core/State/AppState.swift:68 → track "seen an auth callback yet" separately, e.g. `private var didReceiveAuth = false` then `guard !didReceiveAuth || uid != observedUid else { return }; didReceiveAuth = true`   [severity: blocker]
+2. Error strings do not match DESIGN-SPEC §9.1, and raw `localizedDescription` reaches the screen. Every `AuthError` string differs from the table (wrongPassword, userNotFound, emailInUse, weakPassword, invalidEmail, requiresRecentLogin, network); `AuthError.unknown` / `FamilyError.unknown` carry raw Firebase text (`.unknown(error.localizedDescription)`); the Apple failure path shows `error.localizedDescription` verbatim ("The operation couldn't be completed. (com.apple.AuthenticationServices…)"). Only `Code not found. Check it and try again.` and `Enter the 6-character code from your family.` match → FamilyMap/Core/Services/AuthService.swift:29-42,49-50,59; FamilyMap/Core/Services/FamilyService.swift:14-20,29; FamilyMap/Features/Auth/WelcomeView.swift:23,41; FamilyMap/Features/Settings/DeleteAccountFlow.swift:88 → replace each string with the §9.1 text; make `unknown` payload-less and return `Something went wrong. Try again.`; map `AuthError.invalidCredential` and any non-cancel `ASAuthorizationError` to `Apple sign-in didn't work. Try again.`; add `URLError.notConnectedToInternet` → `.network`   [severity: blocker]
+3. Delete-account flow diverges from §9.4 and its copy is factually wrong. (a) Step-1 alert says "This removes your profile, your location, and your messages" — messages are NOT deleted (§9.4 decision; `onUserDeleted` leaves the chat intact). Spec text: `This deletes your account, name, last location and removes you from your family. Messages you've sent stay in the family chat. This can't be undone.` (b) Step 2 still has the "Type DELETE to confirm" field that §9.4 explicitly removes; title should be `Delete my account` with the four bullets (Account · Name · Last location · Family membership). (c) Re-auth is always forced (`proceedToReauth` picks a provider before any delete attempt); spec: attempt `delete()` first, show re-auth only on `.requiresRecentLogin`, with the `.info` banner `For your security, sign in again to confirm.` (d) Email re-auth button should read `Confirm and delete` → FamilyMap/Features/Settings/SettingsView.swift:124; FamilyMap/Features/Settings/DeleteAccountFlow.swift:35,55-66,129,171-198,237 → (a) copy swap; (b) drop `confirmationText`/`canConfirmDelete`, step-2 button always enabled; (c) add a first `.deleting` attempt from step 2 that catches `AuthError.requiresRecentLogin` and only then moves to `.reauthApple/.reauthPassword` (needs `deleteAccount(reauth: Reauthentication?)` or a separate `deleteCurrentUser()` on `AuthService`); (d) label   [severity: (a) blocker — misleading data-deletion claim, Apple 5.1.1(v); (b)(c)(d) should-fix]
+4. Last-member leave promises a deletion that nothing performs, and creator-leave leaves a dead `createdBy`. The client only does `arrayRemove(uid)` + `familyId: null`; there is no client delete and no Cloud Function on `families/{id}` updates (`onUserDeleted` purges/promotes only on account deletion, not on leave — index.ts:216-253). Result: an empty family with a live invite code stays joinable, and after the creator leaves nobody can rename/delete it (rules require `createdBy == uid`). Copy also differs: Swift appends "The family and its chat will be deleted." to the rejoin sentence; §9.5 wants `You're the last member. The family and its chat will be deleted.` → FamilyMap/Core/State/AppState.swift:205-221; FamilyMap/Core/Services/FamilyService.swift:175-190; FamilyMap/Features/Family/FamilyView.swift:84-86; firebase/functions/src/index.ts → decide one: (i) when `members == [uid] && createdBy == uid` the client deletes `families/{id}` + `inviteCodes/{code}` in the batch instead of leaving (rules already allow it; chat purge still needs a function) and add an `onDocumentUpdated("families/{id}")` function that promotes `createdBy` / purges when `members` is empty; or (ii) keep stage-2 scope and change the last-member copy so it does not promise deletion. Either way use the §9.5 string   [severity: should-fix]
+5. Family-name limit: spec says 1–30, rules/BACKEND-SETUP §6/Swift say 1–40. `validName` is 40, `canCreate` is `(1...40)`, and the §9.1 string `Give your family a name (1–30 characters).` is never shown because the button is simply disabled → firebase/firestore.rules:71; docs/DESIGN-SPEC.md:434; FamilyMap/Features/Family/FamilyOnboardingView.swift:17 → pick one number (recommend 40 — rules and the 54 passing tests already use it) and update the spec row to `(1–40 characters)`; either show the string on submit or keep disabling and delete the row   [severity: should-fix]
+6. Email form vs §9.2: the Sign in / Create account toggle exists (footnote link rather than the segmented Picker), but "Forgot password?" → `sendPasswordReset` + toast `Reset link sent to {email}` is missing, and the auto-switch to Create account on `.userNotFound` is missing. The button is also gated on `password.count >= 6`, so the weak-password string can never appear (spec: enable on non-empty, run local checks on tap) → FamilyMap/Features/Auth/EmailSignInView.swift:17-22,50-57 → add the reset link (sign-in mode only) and the `userNotFound` → `.createAccount` switch; relax `canSubmit` to non-empty and run the local checks in `submit()`. Segmented vs link is a nit   [severity: should-fix (reset + auto-switch), nit (segmented)]
+7. Sign-out dialog has no message. §9.6: `Your family and messages stay. Sign back in any time.` → FamilyMap/Features/Settings/SettingsView.swift:111-116 → add `message: { Text(...) }`   [severity: nit]
+8. Invite-code accessibility: label joins characters with " " not ", " (`Invite code A B C 1 2 3` vs spec `Invite code, A, B, C, 1, 2, 3`); Copy/Share buttons lack `Copy invite code` / `Share invite code` labels; no `.announcement` for `Copied` → FamilyMap/DesignSystem/Components/InviteCodeCard.swift:18,30,36   [severity: nit]
+9. §9.3 success view shows the family name as `.largeTitle` where spec wants `✓ Family created` (`.title2`); the Family-tab only-me state uses the §6 map strings ("It's just you for now." / "Invite your family") instead of the §9.3 pair (`It's just you for now` / `Share the code above and your family will appear here.`) → FamilyMap/Features/Family/FamilyOnboardingView.swift:168-173; FamilyMap/Features/Family/FamilyView.swift:44-54   [severity: nit]
+10. Apple delete path: `revokeToken(withAuthorizationCode:)` runs before `user.delete()`, so if the SIWA key / Team ID is not configured in the Firebase console the revoke throws and the account is never deleted (user sees the generic error every time). Correct per Apple policy; just make sure BACKEND-SETUP §2 SIWA-key setup is done before TestFlight, or log the revoke failure and still delete → FamilyMap/Core/Services/AuthService.swift:185   [severity: nit — verify on Mac against a real project]
+11. Offline start with a persisted auth session but an empty Firestore cache (e.g. reinstall): `observeUser` intentionally ignores the cache-miss snapshot, nothing is emitted, `sessionError` stays nil and RootView spins with no exit. Rare; a "Sign out" affordance after a few seconds of `.loading` would close it → FamilyMap/Core/Services/FamilyService.swift:78-84; FamilyMap/App/RootView.swift:10-15   [severity: nit]
+12. §9 says errors render as an inline `.footnote` in `sosRed` under the primary button "(matches current Swift)", but every screen uses `ErrorBanner`. Spec and code disagree about their own agreement; pick one and fix the other → docs/DESIGN-SPEC.md:419   [severity: nit]
+
+Checked OK:
+- COMPILE (Firebase iOS SDK 11, Swift 5.9, read-only): `AuthErrorCode(rawValue: nsError.code)` + `nsError.domain == AuthErrorDomain` is the SDK 11 form (`AuthErrorCode` is a Swift `enum: Int, Error`; `.Code` is gone) and every case used exists (`.wrongPassword .invalidCredential .userNotFound .emailAlreadyInUse .weakPassword .invalidEmail .requiresRecentLogin .networkError`). `OAuthProvider.appleCredential(withIDToken:rawNonce:fullName:)`, `Auth.auth().revokeToken(withAuthorizationCode:)` async, `user.reauthenticate(with:)` async (result discarded with `_ =`), `user.delete()` async, `createProfileChangeRequest().commitChanges()` async, `AuthStateDidChangeListenerHandle`, `EmailAuthProvider.credential(withEmail:password:)`, `providerData[].providerID` — all present in SDK 11. `FirestoreErrorDomain` + `FirestoreErrorCode.permissionDenied.rawValue` / `.unavailable.rawValue` compile whether the type is imported as an NS_ERROR_ENUM struct or a plain enum. `Firestore.Encoder().encode(_:)` returns `[String: Any]` and throws; `@DocumentID` is skipped by the Firestore encoder and `@ServerTimestamp nil` emits the serverTimestamp sentinel — FamilyService.swift:95-101 relies on exactly this. `addSnapshotListener(includeMetadataChanges:)`, `metadata.hasPendingWrites/isFromCache`, `snapshot.data(as:)` (non-optional, throwing) are correct. `ShareLink(item:label:)`, `.alert` with `TextField`, `NavigationLink(_:destination:)`, `.scrollDismissesKeyboard`, `.onChange(of:) { new in }` (single-param, iOS 16), `.submitLabel(.join)`, `SignInWithAppleButton(.signIn/.continue) { } onCompletion: { }` multiple-trailing-closure form, `.signInWithAppleButtonStyle`, `ASAuthorizationError.code == .canceled` — all iOS 16 valid. Imports: Nonce has CryptoKit + Security; AuthService has AuthenticationServices + FirebaseAuth; FamilyService has FirebaseAuth + FirebaseFirestore; InviteCodeCard has UIKit (UIPasteboard, UINotificationFeedbackGenerator); WelcomeView/DeleteAccountFlow have AuthenticationServices. `.kerning(4)` is applied to a `Text` — fine. First real build on the Mac is still the confirmation for the SDK 11 symbol spellings.
+- Symbols after refactor: `ErrorBanner` (InfoBanner.swift:52) used by 6 views; `InviteCodeCard`; `ListenerCancel` (FamilyService.swift:6, also used by ChatView); `FamilyError`; `AuthError`; `DeleteAccountViewModel`; `PrimaryButton(title:isLoading:style:action:)` memberwise init with defaulted middles — every call form (`(title:isLoading:)`, `(title:style:)`, `(title:)`) is valid. `AvatarView(name:photoURL:size:)`, `LoadingView()`, `Date.relativeLabel`, `Date.isStale()`, `Color.fm.{surface,live,stale,sosRed,accent}`, `FMSize.buttonHeight` all exist. `AppState.AuthState` still has 4 cases and RootView's switch is exhaustive. `Reauthentication.apple(_:rawNonce:)` construction and pattern match agree. `@MainActor`: `AppState`, both ViewModels and `DeleteAccountViewModel` are `@MainActor`; every Firestore/Auth callback hops via `Task { @MainActor in }`; SwiftUI closures inherit MainActor from `body`, so calling VM methods from `onRequest/onCompletion` is fine under 5.9 (Sendable complaints would be warnings only in Swift 6 strict mode). `Task {}` inside the actor-isolated classes inherits isolation for the `defer { isBusy = false }` writes.
+- WRITE SHAPES vs RULES: users create = `{name, notifyOnCheckIn, updatedAt: serverTimestamp}` (nil optionals are omitted by synthesized `encodeIfPresent`, so no `null` keys are sent; `validUser` would accept nulls anyway via its `== null` branches) → passes `hasOnly`, `validName`, `is bool`, `is timestamp`, `familyIdAllowed` (absent). Name update = `{name, updatedAt: serverTimestamp}` → familyId-unchanged branch. Create-family batch = family `{name, inviteCode, members:[uid], createdBy: uid, createdAt: serverTimestamp}` (exact `hasOnly` set; `createdAt == request.time` satisfied by the sentinel) + `inviteCodes/{code} {familyId}` + users merge `{familyId, updatedAt}` → `familyIdAllowed` via `isFamilyMemberAfter`. Collision: `setData` on an existing code doc is an update and `allow update: if false` → permission-denied → `isPermissionDenied` → regenerate, max 3 attempts; any other error throws immediately. Join = `get inviteCodes/{code}` (allowed) then `arrayUnion([uid])` + users merge `{familyId, updatedAt}` → rule (a) + `familyIdAllowed`. Leave = `arrayRemove([uid])` + `updateData(["familyId": NSNull(), "updatedAt": serverTimestamp])` → rule (b) incl. the new `callerFamilyIdClearedAfter` (getAfter sees null ≠ familyId) and `validUser` accepts `familyId == null`. Delete is not done client-side (function). Invite-code alphabet (no 0/O/1/I) is a subset of `^[A-Z0-9]{6}$`.
+- firestore.rules `callerFamilyIdClearedAfter`: `!existsAfter(userPath) || getAfter(...).familyId != familyId` — a lone `arrayRemove` (no user write in the batch) fails because the pre-existing familyId still equals the family; `null` and `deleteField()` both pass. Tests cover leave with null, with deleteField, family-write-alone fails, familyId-kept fails, removing another member fails (rules.test.mjs:330-366). 54 `it(` cases counted (users 16, create 9, join 10, leave 5, delete 5, messages 9) — matches the claim; the create/join/leave test bodies use the same key sets as the Swift batches.
+- LOGIC: cache-miss guard in `observeUser` (only a server `exists == false` yields `.user(nil)`), `isCreatingUserDoc` re-entrancy guard, `createUser` uses plain `setData` on a server-confirmed-absent doc. `resolveState(startListeners: !hasPendingWrites)` avoids starting family listeners on the local echo; `holdOnboarding` keeps the invite-code screen until `continueAfterCreate()`. Listeners torn down on auth change (`stopUserListener` + `stopFamilyListeners`), on `signOut()`, on `leaveFamily()` (restarted on failure), on `didDeleteAccount()`. After delete, a late permission-denied on the user listener lands in `sessionError` while `authState == .ready` (RootView renders `sessionError` only in `.loading`) and `handleAuthChange(nil)` clears it, so it never surfaces. `joinFamily` normalises (uppercase + strip whitespace) and validates before the read; the text field also sanitises on change. `pendingDisplayName` is set only in `signInWithApple`/`createAccount`, cleared on failure/sign-out/delete, and on later Apple sign-ins resolves to nil (empty PersonNameComponents) so `currentDisplayName` falls back to the stored profile name — first sign-in only, as intended. `seedName()` clamps to 40. Nonce: raw to Firebase, SHA256 hex to Apple, fresh per request.
+- SPEC matches: share text `Join our family on FamilyMap with code {code}` exact; §9.3 body copy exact; §3.2 layout (two cards, one filled button by focus/content, Sign out escape hatch); leave title and base message exact; delete step-1 title exact; Settings privacy string unchanged; name edit via `.alert` + `TextField` per §3.7 (note: `.disabled` on alert buttons is not honoured on iOS 16, but `saveName()` guards empty anyway — verify on Mac).
+- SCOPE: `updateLocation` still throws the stage-3 stub; Chat/Notification services untouched; no stage 3–5 code. README Stage 2 row = Done and the stage-6 note is updated. Secrets grep (`AIza`, `.p8`, `tekton-88f8e`, `DEVELOPMENT_TEAM`, private keys): only the `.example` placeholder, doc prose and the empty `DEVELOPMENT_TEAM: ""`.
+
+
+================================================================================
+OVERSEER REVIEW — Stage 2 re-review (changed areas only)
+Result: RETURN
+(11 of 12 first-pass items are fixed and verified. One blocker is left, a small one: a Sign in with Apple user whose session is still fresh gets deleted with no token revocation. The fix is about 5 lines plus one spec sentence. No compile-breakers found by reading.)
+
+Issues:
+1. Apple accounts can be deleted without `revokeToken`. With delete-first, `confirmDelete` calls `deleteAccount(reauth: nil)`. When the Firebase session is fresh (signed in within about 5 minutes, which is the App Review tester's path: sign up, then delete straight away), `user.delete()` succeeds and the `case nil: break` branch skips the SIWA → `revokeToken(withAuthorizationCode:)` step. Apple's SIWA rules require token revocation on account deletion, and the authorization code only comes from a fresh SIWA prompt → FamilyMap/Features/Settings/DeleteAccountFlow.swift:51-53; FamilyMap/Core/Services/AuthService.swift:203-205 → in `confirmDelete`, if `appState.authService.currentProvider == .apple`, set `step = .reauthApple` and don't call delete. Email users keep delete-first. Designer: change §9.4 step 3 to "Apple users always see the Apple button (needed to revoke the Apple token); email users get re-auth only on `requiresRecentLogin`"   [severity: blocker (Apple SIWA revocation policy)]
+2. `.userNotFound` will probably never fire on a new Firebase project. Email enumeration protection is on by default for projects created since Sept 2023. With it on, `signIn` with an unknown email returns `.invalidCredential`. That shows "Wrong password. Try again or reset it." and the auto-switch to Create account never happens. §9.1 says "no enumeration masking", so the console setting has to match → docs/BACKEND-SETUP.md §2 "Email/Password" → add one line: "Authentication → Settings → User actions → turn OFF Email enumeration protection (DESIGN-SPEC §9.1 shows 'No account with that email')". No code change   [severity: should-fix (doc), verify in console]
+3. The password-reset confirmation reads "Password reset email sent." but §9.2 says `Reset link sent to {email}` → FamilyMap/Features/Auth/EmailSignInView.swift:145 → `"Reset link sent to \(emailToUse)"`   [severity: nit]
+4. `purgeFamily` returns early when the family doc is already gone, so if `recursiveDelete` fails after the transaction commits, the chat messages are orphaned for good (no retry reaches them) → firebase/functions/src/index.ts:153,159-163 → when `!snap.exists`, still run `recursiveDelete(chats/{familyId})`. It is idempotent and cheap on an empty tree   [severity: nit]
+5. Carry-forward (stage 4/5 screens, out of scope here): raw `error.localizedDescription` still reaches the UI in FamilyMap/Features/Chat/ChatView.swift:41 and FamilyMap/Features/SOS/SOSConfirmSheet.swift:72 → switch both to `error.userMessage` when those stages land   [severity: nit — carry-forward]
+
+Checked OK:
+- (a) Item 1 auth gate, traced: `guard !didReceiveAuth || uid != observedUid`. On a fresh install the first callback is nil: the guard passes because `didReceiveAuth` is false, then `observedUid = nil` → `.signedOut` → Welcome. On sign-in, uid "A" ≠ nil → `.loading` → server snapshot `exists == false` → `createUserDocIfNeeded` → pending-write snapshot → `currentUser` set, `resolveState(startListeners: false)` → no familyId → `.needsFamily`. An existing user with a familyId goes to `.ready` and the family listeners start on the acked snapshot. Sign-out → nil ≠ "A" → `.signedOut`; sign-in as "B" ≠ nil → handled. A duplicate same-uid callback at launch is ignored. `retrySession()` re-attaches only the user listener for `observedUid`.
+- (b) All 12 §9.1 strings are exact matches in Swift (grepped with fixed strings). Spec and Swift both use straight apostrophes only (0 curly quotes in DESIGN-SPEC.md and in every .swift file). Also exact: §9.4 step-1 message, `Your account has been deleted.`, §9.6 sign-out message, both §9.5 leave messages, §9.3 empty-state title and message, `Copy invite code` / `Share invite code`, `Confirm and delete`, the share text. `AppError.userMessage` is the only mapping. `localizedDescription` is gone from every stage-2 file (the only remaining UI uses are item 5; AppDelegate's is a `print`). `AuthError` / `FamilyError` have no associated values, so Equatable is synthesized and `(error as? AuthError) == .userNotFound` / `== .requiresRecentLogin` compile.
+- (c) DeleteAccountFlow state machine: idle → confirm1 (alert) → confirm2 (sheet) → [`isDeleting`] → done, or on `requiresRecentLogin` (only from confirm2) → reauthApple / reauthPassword → [`isDeleting`] → done. Any other failure stays on the same step with `errorMessage` and the button enabled again. Cancel is blocked while deleting and `interactiveDismissDisabled` is set. There is no dead state (the `.unknown` provider can't happen here: the app only offers Apple and email). Apple re-auth order is right: `reauthenticate(with:)` → `revokeToken(withAuthorizationCode:)` → `delete()` (AuthService.swift:195-206). `requiresRecentLogin` is detected with the SDK 11 `AuthErrorCode(rawValue: nsError.code)` under `AuthErrorDomain`, and a rejected Apple credential is re-mapped to the Apple string. On success: `step = .done` → the sheet closes → `didDeleteAccount()` sets `transientMessage` → the auth listener fires nil → `.signedOut` → WelcomeView shows `Your account has been deleted.` in an InfoBanner (the order of the two MainActor hops doesn't matter because Welcome reads the published value). Sheet binding: moving confirm2 → reauth keeps `isSheetPresented` true, and the alert's `set(false)` after Continue doesn't cancel because step is already confirm2. Alert → sheet presented back to back: verify on Mac.
+- (d) Compile, new and rewritten files: AppError.swift is Foundation-only (`URLError`, `NSURLErrorDomain`). InviteCodeCard imports UIKit, so `UIAccessibility.post(notification: .announcement, argument:)` is available. `.accessibilityLabel` on a Button / ShareLink is fine on iOS 16. RootView's `SessionLoadingView` uses `.task(id: attempt)` (iOS 15+) plus `Task.sleep(nanoseconds:)`: the task is cancelled when the view leaves (authState changes away from `.loading`), `try?` swallows the CancellationError, `guard !Task.isCancelled` stops the late write, and Retry bumps `attempt` to restart it. `@State` resets because the `.loading` branch is rebuilt each time. The `switch reauth` over an `Optional<Reauthentication>` covers `.apple?`, `.password?` and `nil`, so it is exhaustive. `if case .apple? = reauth` without bindings is legal. `throw a == b ? x : y` parses. `Label { } icon: { }`, `EmptyStateView(systemImage:title:message:)` and `PrimaryButton(title:isLoading:)` all match their definitions. The `.invalidCredential` still in the code is `AuthErrorCode.invalidCredential`, not the removed `AuthError` case. No stale symbols (`confirmationText`, `canConfirmDelete`, `proceedToReauth`, `.failed(`, `.unknown(`) remain. `deleteAccount(reauth:)` has one caller and matches the protocol.
+- (e) Functions: `purgeFamily` re-reads the family inside a transaction and deletes the family doc and its code only if the doc exists and `members` is empty, so a join mid-purge or a duplicate delivery can't purge a live family. If `onUserDeleted` and `onFamilyUpdated` race, the transactions run one after the other: one returns true, the other sees `!exists` and returns false, and only one `recursiveDelete` runs (idempotent). No trigger loop: a purge is a delete, which `onDocumentUpdated` doesn't fire on; a promotion write fires once more, then finds `createdBy ∈ members` and does nothing. A stale promotion from a concurrent leave self-heals on the next event. `members[0]` is the longest-standing member, because `arrayUnion` appends (matches §9.5). `db.recursiveDelete(DocumentReference)` exists in Admin SDK 12 and deletes subcollections even when the parent `chats/{familyId}` doc doesn't exist. The `onUserDeleted` transaction does all its reads before any write. If someone joins during the empty-family window, the purge is skipped and `onFamilyUpdated` promotes the joiner. Last-member leave copy is now true. `tsc` passes and the 54/54 rules tests pass, both as the builders reported; rules file unchanged.
+- Other fixed items confirmed: onboarding shows `Give your family a name (1–40 characters).` on submit (spec, rules and Swift now all say 40). Success view shows ✓ `Family created` in `.title2`. Invite-code VoiceOver label is `Invite code, A, B, …` and `Copied` is announced. Sign-out dialog message added. Email form: fields enabled once non-empty, invalid-email and weak-password (create mode) checks run locally before the network call, Forgot password link in sign-in mode only, auto-switch on `.userNotFound`. Error presentation in §9 is now `ErrorBanner`, which matches the code. BACKEND-SETUP §2 revoke-key warning, §5 function table, §7 leave row. Nothing from stages 3–5 was added.
+
+
+================================================================================
+OVERSEER REVIEW — Stage 2 final
+Result: PASS
+(The re-review blocker is fixed, and so are the should-fix and the nits. One copy nit is left and does not need another round.)
+
+Issues:
+1. The Apple re-auth step still shows the generic banner "For your security, sign in again to confirm." (`AuthError.requiresRecentLogin.userMessage`). The updated §9.4 step 3 now says, for Apple: `Sign in with Apple to confirm.` / `Apple needs to confirm before we delete your account.` The email step keeps the current string → FamilyMap/Features/Settings/DeleteAccountFlow.swift:188-194 → give `reauthAppleView` its own InfoBanner with the §9.4 Apple copy   [severity: nit]
+
+Checked OK:
+- (1) No path deletes an Apple user without `revokeToken`. There is one `user.delete()` in Swift (AuthService.swift:207). It is reached only after `.apple` re-auth → `revokeToken` (which throws on failure, so no delete), or after `.password` re-auth, or with `nil` for a non-Apple provider. `nil` + `currentProvider == .apple` throws `.requiresRecentLogin` before `delete()`, and `confirmDelete` also sends Apple users straight to `.reauthApple` without calling delete. So the Apple fresh-session case is covered twice. `currentProvider` checks `apple.com` first, so an account linked to both providers still takes the Apple path.
+- (2) No Swift code deletes documents. The grep for `.delete(` / `deleteDocument` / `batch.delete` finds only `user.delete()`. The rules now say `families` and `inviteCodes` `allow delete: if false`, and the 7 "server only" tests cover creator, sole member, non-creator, empty family, both invite-code cases and the batch.
+- (3) Last-member leave: the Swift batch (`arrayRemove([uid])` + `familyId: NSNull()` + `updatedAt`) still meets rule (b): size −1, `hasAll`, `callerFamilyIdClearedAfter`. The new test "last member leaves -> members == [] succeeds" confirms it and checks `members == []` afterwards. The dialog message is the exact §9.5 string `You're the last member. The family and its chat will be deleted.`, which is now true because `onFamilyUpdated` purges.
+- (4) `purgeFamily`: the transaction returns `"purged" | "gone" | "live"` (typed union, reads before writes), and the function still returns `Promise<boolean>`, so both call sites are unchanged. `live` → no-op. `gone` → `recursiveDelete` only (idempotent sweep, which fixes the orphaned-chat nit). `purged` → deletes the family doc and its code, then sweeps. When `onUserDeleted` and `onFamilyUpdated` race, the transactions run one after the other and the second call becomes a harmless sweep. `tsc` passes and the tests are 58/58, both as the builders reported (not re-run here).
+- The other fixes are confirmed: the reset text is `Reset link sent to \(emailToUse)` (§9.2). ChatView:41 and SOSConfirmSheet:72 now use `error.userMessage`, and `localizedDescription` is left only in AppDelegate's `print`. BACKEND-SETUP §2 has the Email Enumeration Protection OFF step. The §7 leave row describes the server-side purge and promotion, with no leftover client-delete wording.
+
+
+================================================================================
+OVERSEER REVIEW — Stage 3: Location + Map
+Result: RETURN
+(Privacy is clean. The write shape matches the new rule. I found no compile-breakers by reading. 1 blocker: an offline share that times out stays in Firestore's write queue, and when it is sent later the server stamps an old position as fresh. 3 should-fix, the rest nits. All fixes are small. NOTE: DESIGN-SPEC.md was rewritten while this review ran (file time 10:33, Swift 10:22). It gained §11 "Stage 3.5 Member Drawer", which supersedes §3.4, §10.6, §10.7 and §10.9 and changes §10.5. This review checks the Swift against the Stage 3 §10 text it was built to. Item 9 lists what §11 makes moot.)
+
+Issues:
+1. An offline share is published later, with an old position stamped as fresh. `write()` gives up after 10 s, but the `updateData` stays in Firestore's persisted write queue. It is sent when the connection comes back, which can be an hour later or on the next launch. The server resolves `serverTimestamp()` when it commits. So the family sees the old coordinate as "Updated just now", `onLocationUpdated` sends a "checked in" push for it, and no capsule ever shows that share (against §10.10 "sharing is never silent"). This undoes the purpose of the new `updatedAt == request.time` rule. The §10.3 "check reachability before writing" is not implemented → FamilyMap/Core/Services/FamilyService.swift:223-237; FamilyMap/Core/Services/LocationSync.swift:142-162 → make the write impossible to queue: run it as a write-only transaction (`_ = try await db.runTransaction { tx, _ in tx.updateData([...same two keys...], forDocument: self.users.document(userId)); return nil }`). Transactions fail offline (`unavailable` → `FamilyError.network`, already mapped) and are never replayed. Keep the 10 s timeout as a backstop. Also add the §10.3 `NWPathMonitor` check before requesting the fix, so offline shows the banner at once instead of after fix + 10 s. Verify on Mac: airplane mode → Refresh → offline banner; reconnect and relaunch → `lastLocation.updatedAt` unchanged in the console   [severity: blocker (data correctness)]
+2. Manual Refresh gives no feedback besides the capsule. §10.3 wants the result string posted as a VoiceOver `.announcement` after a manual refresh only, and an `.error` haptic on a manual failure. §3.3 also wants a brief haptic on tap. None of these exist, so a VoiceOver user never hears whether the share worked → FamilyMap/Features/Map/MapView.swift:185-187 → `.light` impact on tap. After `await locationSync.share(force: true)`, if the status is `.shared` post `UIAccessibility.post(notification: .announcement, argument: "Shared just now")`. If it is `.failed(msg)`, post `msg` and fire `UINotificationFeedbackGenerator().notificationOccurred(.error)`. Auto shares stay silent   [severity: should-fix (accessibility)]
+3. Relative times never tick. §8 says "Timestamps refresh on a 60 s timer while the view is visible, and on scenePhase == .active". The repo has no `TimelineView` or `Timer` (grep). So "Updated just now" stays until the next Firestore snapshot, a pin that passes 24 h never turns stale while on screen, and pin VoiceOver labels go out of date → FamilyMap/Features/Map/MapView.swift:121; FamilyMap/Features/Family/FamilyView.swift:26; FamilyMap/Features/Family/MemberRow.swift:9-15; FamilyMap/Features/Map/MemberDetailCard.swift:17 → wrap the Map/overlays and the members Section in `TimelineView(.periodic(from: .now, by: 60)) { _ in ... }`. It stops by itself off screen, so there is no timer to cancel. Verify on Mac that it catches up on return to the foreground   [severity: should-fix]
+4. Family tab → Map focus races the tab switch. `showOnMap` sets `focusMemberId` then `selectedTab` in the same update. MapView's `.onChange(of: focusMemberId)` can run before the Map tab's hosting controller is in the window, and set `selection` there. On iOS 16 the `.sheet(item:)` can then fail with "not in the window hierarchy". `focusMemberId` is already cleared, so `.onAppear` can't retry, and the camera moves with no card → FamilyMap/Features/Family/FamilyView.swift:104-108; FamilyMap/Features/Map/MapView.swift:145-157,288-293 → centre right away, but set `selection` after the tab switch has landed (e.g. `Task { @MainActor in try? await Task.sleep(nanoseconds: 300_000_000); viewModel.selection = ... }`). The §11 drawer needs the same ordering   [severity: should-fix — verify on Mac]
+5. The map ignores the bottom safe area too. §3.3 says `.ignoresSafeArea(edges: .top)`, but Swift has `[.top, .bottom]`. That can push MapKit's Apple logo and Legal link under the tab bar, and MapKit terms require them visible → FamilyMap/Features/Map/MapView.swift:134 → `.ignoresSafeArea(edges: .top)`   [severity: nit — verify on Mac]
+6. The "Location is off" banner uses `.error` (red). §10.2 says InfoBanner `.warning` (orange 15 %), and `InfoBanner.Style` has no `.warning` case → FamilyMap/DesignSystem/Components/InfoBanner.swift:5-8,45-57; FamilyMap/Features/Map/MapView.swift:169 → add `.warning` (orange icon, `Color.orange.opacity(0.15)` fill) and use it here   [severity: nit]
+7. `reset()` (account switch, leave) while a share is in flight: the old `requestCurrentLocation` keeps its continuation until the fix arrives or 15 s pass. A new share inside that window throws `alreadyRequesting`, which shows "Couldn't get your location. Try again.". Separately, the timeout `Task` in `write()` isn't cancelled on success. It sleeps 10 s and does nothing, so it's harmless → FamilyMap/Core/Services/LocationSync.swift:105-110,157-160; FamilyMap/Core/Services/LocationService.swift:59 → add `LocationService.cancel()` (`finish(with: .failure(CancellationError()))`) and call it from `reset()`. Keep the timeout task's handle and cancel it after the write   [severity: nit]
+8. Backend/docs:
+   (a) No rules tests for clearing `lastLocation` (`null` and `deleteField()`, both allowed), or for denying a dotted-path `{"lastLocation.lat": x}` update over an old stamp → firebase/tests/rules.test.mjs:491-580.
+   (b) The header of firebase/functions/test/checkin.test.mjs:2 says `node --test test/`, but package.json runs `test/checkin.test.mjs`.
+   (c) Check-in push copy disagrees. The function sends title `FamilyMap`, body `{name} checked in` (firebase/functions/src/index.ts:188-192). docs/DESIGN-SPEC.md:332 says title `{name} checked in`, body `Updated {relativeTime}.`. Settle it in stage 4.
+   (d) The docs/BACKEND-SETUP.md:246 "Copies elsewhere" row leaves out the Firestore on-device cache. Each member's phone keeps the family's last-seen locations on disk, and the pending-write queue lives there too. Add a line, and consider `clearPersistence()` on sign-out/delete in stage 6.
+   (e) README.md:39 already says Stage 3 "Done" before an Overseer PASS. docs/BUILD-PLAN.md:41-43 still has Backend/Designer/Overseer unticked   [severity: nit]
+9. Spec-vs-Swift mismatches that §11 (Stage 3.5) removes anyway. Logged here; don't polish code that is about to be deleted:
+   (a) My own sheet shows `Open in Maps` plus "(You)". §3.4/§10.6 want "Refresh my location" only; §11.4 makes it a `Check in` row action → FamilyMap/Features/Map/MemberDetailCard.swift:73-76.
+   (b) The sheet is always `.height(200)`. §10.6 wants `.medium` at accessibility text sizes → MapView.swift:281.
+   (c) The only-me card button is a `ShareLink`, where §3.3 says "jump to Family tab" (§11.5 makes it a ShareLink anyway).
+   (d) Visual detail: the no-location capsule is `.subheadline`, 2 lines (spec `.footnote` secondary, 1 line). The status capsule is `.subheadline` with no 32 pt height (spec `.footnote`). The pin label is `.caption2` on a rounded rect (spec `.caption` semibold on `.thinMaterial`, truncate at 80 pt). The ring is 3 pt (spec 2 pt). `stale` is `.systemGray` (spec `.systemGray3`). Missing: the L-state ProgressView, the X-state "Can't reach FamilyMap…" banner, ErrorBanner tap-to-dismiss, and the map's "Family map" label.
+   (e) Designer flags vs the Swift as it stands. First fit includes stale pins, which matches Stage 3 §8/§10.5; the edited §10.5 now says fresh-only, so do it in 3.5. Own-pin sheet: see (a). Notification Priming is not auto-presented yet (Settings link only, stage 4), so nothing stacks on the location prompt today. Stage 4 must present it only once `locationService.authorizationStatus != .notDetermined`.
+   (f) Heads-up for the 3.5 gate: battery is a new stored field (rules `hasOnly`, BACKEND §6/§7/§9, App Store label). `CLGeocoder` sends coordinates to Apple, so §10.10 "Apple Maps receives a coordinate only when…" and BACKEND §9 "Copies elsewhere" need updating   [severity: nit / info]
+10. Verify on Mac:
+   (a) The iOS 16 SwiftUI `Map` has no annotation `zPriority`, so sorting `pins` by `layer` may not draw stale pins below fresh ones.
+   (b) `Map(coordinateRegion:)` bound to a `@Published` region often logs "Publishing changes from within view updates" on iOS 16. Harmless, but check the console.
+   (c) The first fit can land on a cache-only members snapshot that holds just my doc (e.g. right after joining on a device where I already have a `lastLocation`). The others then appear off screen until Fit everyone   [severity: nit — verify on Mac]
+
+Checked OK:
+- PRIVACY (grep, all .swift/.yml/.plist): `requestAlwaysAuthorization`, `allowsBackgroundLocationUpdates`, `startMonitoringSignificantLocationChanges`, `startUpdatingLocation`, `startMonitoring`, `CLCircularRegion`, `startMonitoringVisits`, `CLLocationUpdate` and `CLMonitor` have 0 hits. The only Core Location requests are `manager.requestLocation()` (LocationService.swift:79) and `requestWhenInUseAuthorization()`. `authorizedAlways` appears only in a status comparison. `UIBackgroundModes` is `[remote-notification]` only. `NSLocationWhenInUseUsageDescription` is still the exact §6 string and still honest: shares happen only on open/foreground, on Refresh, or when permission is granted while in the foreground. `manager.location` (cached fix) is read only to centre the camera when nobody is located, and is never written. No history: `updateData(["lastLocation": map])` replaces the whole map, and neither model holds a list of points.
+- WRITE SHAPE vs RULES: FamilyService.swift:224-233 writes `{lastLocation: {lat, lng, updatedAt: serverTimestamp()}, updatedAt: serverTimestamp()}`. That is BACKEND §7 exactly. It passes `validUser`, `validLocation` (hasOnly/hasAll, ranges, `is timestamp`) and `locationStampedNow` (both sentinels in one write resolve to `request.time`), with uid == doc id. No client `Date` in any location write. `LocationPoint.updatedAt` is `@ServerTimestamp Date?` and the model is never encoded (no `LocationPoint(` call sites). Stage-1 nit #1 is closed.
+- RULES: `locationStampedNow` applies on create, and on update only when `affectedKeys().hasAny(['lastLocation'])`. So name/token/leave writes pass under an old stored stamp (tested). `null` and `deleteField()` clears pass. A dotted-path partial write marks `lastLocation` as affected and must re-stamp. The location suite covers: server stamp, client `Date` now and future, create, ranges, type, extra key, missing key, another user, same-family read, ex-member loses get + query, no-family read. 71 `it(` cases, matching the claim (not re-run here).
+- FUNCTIONS: `shouldNotifyCheckIn` is pure: no after-location or no family → false; first share → true; otherwise a ≥ 10 min gap in server time. `onLocationUpdated` casts `familyId` only after that check. The 6 unit tests cover every branch. `npm test` = `npm run build && node --test test/checkin.test.mjs`; the ESM test importing the CJS `lib/checkin.js` named export works with tsc's `exports.x =` output. The BACKEND §5 row matches. Logs carry uids/familyIds, never coordinates. The rest of the §9 table matches the code: overwrite, foreground only, family-only read, the leaver keeps their own doc, deletion via `onUserDeleted`.
+- COMPILE (read-only):
+  - `Map(coordinateRegion:showsUserLocation:annotationItems:annotationContent:)` label order is valid (defaulted `interactionModes` omitted). `MapAnnotation(coordinate:content:)` and `MemberPin: Identifiable` are fine. iOS 16 `MapInteractionModes` has no rotate, so §10.5 "no rotate" holds by default.
+  - `.toolbar(.hidden, for: .navigationBar)`, `.presentationDragIndicator(.visible)`, `.presentationDetents`, `ShareLink`, `.background(_:in:)` are all iOS 15/16. `.sheet(item:)` has `SelectedMember: Identifiable`, and the two sheets sit on different views.
+  - `kCLErrorDomain` is a CoreLocation `String` constant, and AppError imports CoreLocation.
+  - `locationService.$authorizationStatus` from another type is fine (the projected getter follows the internal get), and `CLAuthorizationStatus` is Equatable for `removeDuplicates`.
+  - `CLLocationManager` is created in `AppState.init` under `@StateObject`, so on main. Delegate callbacks, `continuation` and the `@Published` mutation are therefore all on main. `finish` nils the continuation before resuming (at most one resume) and cancels the timeout. `Self.` inside closures is fine (both classes are `final`).
+  - `LocationSync.Status` Equatable is synthesized, and `case .idle, .failed:` makes the switch exhaustive. `ResumeOnce` is touched only on MainActor.
+  - `MKMapItem(placemark: MKPlacemark(coordinate:))` compiles, and `openInMaps(launchOptions:)` is fine (an imported ObjC BOOL result is discardable).
+  - `TabView(selection: $appState.selectedTab)` works with `MainTab: Hashable` + `.tag`. The `InfoBanner(systemImage:title:message:style:actionTitle:action:)` argument order matches the memberwise init. Every `Color.fm.*` / `FM*` token used exists (the removed `fm.live` has no users).
+  - `@ServerTimestamp` nested in `LocationPoint`: the key is always present (rules `hasAll`, and a local pending write is NSNull under the default `.none` behaviour, which decodes to nil). This is the same path `AppUser.updatedAt` already uses. Verify on Mac: `observeMembers` does `compactMap { try? }`, so a decode failure would silently drop my own row and pin during a pending write.
+  - Environment: `AppState`, `LocationService` and `LocationSync` are injected at the WindowGroup root. Consumers are MainTabView and MapView. SOSConfirmSheet uses only AppState, and MemberDetailCard takes no environment objects.
+- LOGIC:
+  - Launch: MainTabView exists only in `.ready`, and shares from `.task` (if `.active`) and from `.onChange(scenePhase → .active)`. A cold launch fires exactly one of them. Those paths and the permission-grant sink all go through `share()`, which sets `.sharing` synchronously on MainActor before its first `await`, so a second caller bails.
+  - Throttle: 2 min, measured from the last successful share (manual included). Failed auto shares don't throttle. The prompt's inactive→active bounce plus the grant callback cause no double share.
+  - Permission: `.notDetermined` → prompt on first share → one share on grant (`dropFirst` + `removeDuplicates` skip the initial value and the launch delegate callback). Denied → no attempt, banner shown, status cleared. Precise off → the approximate fix is accepted.
+  - Timeouts: the 15 s fix timeout starts only after authorization. The 10 s write timeout → exact offline string (the later queued commit is item 1).
+  - `reset()` runs on every auth change and on leave, and `sharingUserId` is nil unless `.ready`.
+  - Camera: the first fit runs once (`hasFitted`): stale included, 30 % padding, min 0.01°, clamped span; one member → centred. The device fallback doesn't consume the fit. Later snapshots and my own shares never move the camera. Fit everyone is disabled with no pins.
+  - The "+N" capsule lists others only, sorted first names, max 3, then ` +N`, and is hidden when there are none or it's only me.
+  - Stale: 50 % + grey ring on pins, grey ring + "Last seen" on rows. A pending nil stamp → "just now" and never stale. A future (skewed) stamp → "just now". The §8 table is implemented as written.
+- SPEC STRINGS (fixed-string grep, straight apostrophes, `…` is U+2026 in both): `Location is off`, `Turn it on to share where you are with your family.`, `Open Settings`, `Sharing…`, `Shared just now`, `Couldn't get your location. Try again.`, `No location yet: …` (+N), `No location yet`, `Open in Maps`, `Updated …` / `Last seen …`, `Refresh my location`, `Fit everyone`, `Show {name} on map`. Pin VoiceOver `{name}, updated {rel}` / `{name}, last seen {rel}` / `You, updated …` with hint `Double-tap for details`, and `You're offline. Check your connection.`: all exact.
+- SCOPE / SECRETS: nothing from stages 4–5. Chat and Notification services are still stubs, SOSConfirmSheet is unchanged (`TODO(stage 4)`), and Notification Priming is reachable only from Settings. Secrets grep (`AIza`, `.p8`, private keys, `tekton-88f8e`, `DEVELOPMENT_TEAM`) finds only the `.example` placeholder, doc prose and the empty team. `firestore-debug.log` and `functions/lib/` are gitignored.
+
+
+================================================================================
+OVERSEER REVIEW — Stage 3 re-review + Stage 3.5 (Life360-style home)
+Result: RETURN
+(The Stage 3 blocker is fixed and so are all 10 first-pass items; details under Checked OK. Stage 3.5 has no compile-breakers by reading, and privacy is clean. Two small should-fix items in the new drawer code send this back: one would leave place lines stuck on "Location shared" for the rest of the session, the other is a row tap that does nothing visible. About 10 lines in all; the next pass only needs to look at those lines.)
+
+Issues:
+1. A failed reverse geocode is cached until that member's coordinate changes. `finish` saves `.shared` under the current key, so a lookup that fails is never tried again. Open the app offline (on a train, say), or hit Apple's geocoder rate limit with a bigger family, and every row shows "Location shared" for the whole session even after the connection comes back. A member whose location is stale never moves, so their row never recovers. §11.4 only allows "Location shared" while geocoding is pending, failed or offline → FamilyMap/Core/Services/PlaceNameResolver.swift:80-84,88-89 → on error, don't store the result. Keep a `failedAt[uid]` and let `resolve()` try again when it has been ≥ 60 s since the failure. `resolve` already runs on every member change, and every foreground share changes my own key, so no timer is needed. Or clear the failed entries on `scenePhase == .active`   [severity: should-fix]
+2. Tapping a row while the drawer is collapsed opens actions you can't reach. Collapsed shows one row, which is mine, and `.scrollDisabled(snap == .collapsed)` is set. `toggleRow` → `select(liftDrawer: false)` expands my row with "Check in" below the visible 64 pt and you can't scroll to it, so nothing seems to happen apart from the map moving → FamilyMap/Features/Map/MapView.swift:509-516 → in `toggleRow`, when selecting, call `select(memberId, liftDrawer: true)`. That is the same lift-to-half a pin tap does (§11.4)   [severity: should-fix]
+3. `battery = Int(level * 100)` truncates. `batteryLevel` comes in 0.05 steps as a Float (0.35 × 100 = 34.99…), so 35 % is stored and shown as 34 % → FamilyMap/Core/Services/LocationSync.swift:145 → `Int((level * 100).rounded())`   [severity: nit]
+4. The rules accept a fractional `acc` (`acc is number`), but the model decodes `acc: Int?`. A doc with `acc: 12.5` makes `data(as: AppUser.self)` throw, and `observeMembers`' `compactMap { try? }` then drops that member from everyone's map and drawer. Only that member's own writes can cause it (rules are owner-only), but the shapes should still match → firebase/firestore.rules:89 → `loc.acc is int` (plus one test), or decode `acc` as `Double?`   [severity: nit]
+5. Place and scroll edge cases:
+   (a) The cache key is the coordinate only. If `acc` goes from >500 m to precise at the same 4-dp coordinate, the suburb-only line stays → PlaceNameResolver.swift:38-40 → add the rough/precise flag to the key.
+   (b) `scrollTarget` only scrolls when its value changes. Tap Mum's pin, scroll away, tap Mum's pin again, and the list doesn't scroll → MapView.swift:522 → use a token (`UUID`) or reset it to nil after scrolling.
+   (c) §11.4 says tapping empty map deselects. Not implemented; row re-tap does work.
+   (d) The place line is `.lineLimit(2)`. §11.4 says 1 line, and 2 only at accessibility sizes → DrawerMemberRow.swift:88.
+   (e) Flick velocity comes from the last `onChanged` sample. If the finger pauses and then lifts, an old fast value can still trigger a flick. `value.predictedEndTranslation` (iOS 13) avoids that   [severity: nit]
+6. Carry-forward and docs:
+   (a) The check-in push still says title `FamilyMap`, body `{name} checked in` (index.ts:188-192). §6 wants title `{name} checked in`, body `Updated {relativeTime}.`. Stage 4.
+   (b) BUILD-PLAN.md's Stage 3 section now has no ticks, still lists "member detail card", and there is no Stage 3.5 entry. README has no 3.5 row → add a "3.5 Map home: drawer, battery, on-device place names" line to both.
+   (c) Still open from Stage 1/3: tapping a Family-tab row (§3.6), the map's "Family map" label (§7), the L-state ProgressView and X-state banner (§3.3). Stage 6 polish is fine   [severity: nit]
+7. Verify on Mac:
+   (a) Legal link in full. In full the map frame is only safe-top + 56 pt tall, so MapKit's "Legal" link, bottom-right, may sit under the Refresh button. Collapsed and half are fine. I accept the builder's trade-off (map bottom = settled drawer top); during a drag the map lags the drawer and a background band shows as it moves down.
+   (b) `geo.safeAreaInsets.top` is non-zero inside the non-ignoring GeometryReader (the snap maths and fits depend on it; if it's 0, the full snap and the SOS overlap check come out 20–59 pt off).
+   (c) Offline on the transaction: it should fail within the 10 s backstop, and a commit that retries in after 10 s should be seconds old, not hours. A late success shows "offline" while it actually landed. Harmless; note it in §10.3.
+   (d) The SF Symbols `battery.75` / `battery.50` render on iOS 16.0 (added after `battery.0/25/100`).
+   (e) The collapsed-drawer DragGesture on the ScrollView doesn't swallow row taps (`minimumDistance: 4`).
+   (f) z-order of the selected and stale pins (SwiftUI `Map` has no zPriority)   [severity: nit — verify on Mac]
+
+Checked OK:
+- STAGE 3 BLOCKER #1 (closed):
+  - `updateLocation` is now `_ = try await db.runTransaction { transaction, _ in transaction.updateData(fields, forDocument: userRef); return nil }` (FamilyService.swift:239-259). It matches the SDK 11 Swift async `runTransaction(_: @escaping (Transaction, NSErrorPointer) -> Any?) async throws -> Any?`. The closure returns `nil` as `Any?`, and the ObjC `updateData(_:forDocument:)` returns a discardable `Transaction`.
+  - A write-only transaction commits over RPC and never enters the persisted write queue, so nothing can be replayed hours later with a fresh server stamp. Offline → `unavailable` → `FamilyError.network` → the exact offline string. The block has no side effects, so SDK retries are safe. There is also no pending local write now, so my pin moves on the server ack and "Shared just now" means it really committed.
+  - `NWPathMonitor`: one per `LocationSync` (app lifetime), handler set before `start(queue:)` on a private serial queue, `isOnline` written only through `Task { @MainActor }`. Starting optimistic is fine: the first path update arrives long before the first share (which waits for auth and the user doc).
+  - The pre-check runs before the fix is requested, so offline shows the banner at once. `import Network` is present.
+  - Write timeout: the handle is kept and cancelled after the write, and `guard !Task.isCancelled` covers the race. `ResumeOnce` still guarantees a single resume.
+- STAGE 3 #2–#7 (closed):
+  - #2 `manualShare()` (Refresh and Check in): `.light` impact on tap, `.announcement` "Shared just now" or the error string, `.error` haptic on failure. Auto shares stay silent (MapView.swift:560-574).
+  - #3 `TimelineView(.periodic(from: .now, by: 60))` wraps the Map, the drawer list and each Family row (one per row, so the List keeps separate rows). If body re-renders reset the schedule, re-rendering recomputes the times anyway, so text is never more than 60 s old.
+  - #4 The Family-tab focus centres at once and selects after 300 ms. With no sheet any more, the presentation race is gone.
+  - #5 The map ignores `.top` only; its bottom is the settled drawer top.
+  - #6 `InfoBanner.Style.warning` (orange icon, orange 15 % fill) is used for "Location is off", and both `switch`es are exhaustive.
+  - #7 `reset()` bumps the generation and then calls `LocationService.cancel()`. That resumes with `CancellationError`, and the generation guard means nothing is shown; a late CL fix finds no continuation and is ignored.
+  - #8 Tests for the `null`/`deleteField()` clear and for a dotted-path/battery-only update without a new stamp are added (84 `it(` counted). The checkin.test header is fixed. BACKEND §9 covers the on-device cache and says location writes never queue. README says "In review".
+  - Designer flags now match: the first fit and Fit everyone use fresh pins only, or all pins if every one is stale (§10.5/§8). The own row offers `Check in`. Priming is still not auto-presented (stage 4 must wait for `authorizationStatus != .notDetermined`).
+- WRITE SHAPE vs RULES: `lastLocation = {lat, lng, updatedAt: serverTimestamp(), acc?: Int, battery?: Int, charging?: Bool}` plus top-level `updatedAt: serverTimestamp()`.
+  - `acc` is `Int(min(horizontalAccuracy, 100000).rounded())`, or omitted when negative/invalid.
+  - `battery` is 0–100, or omitted when `batteryLevel < 0`. `charging` is `.charging/.full` → true, `.unplugged` → false, `.unknown` → omitted.
+  - Nil keys are left out of the map, never `NSNull`. The field value replaces the whole map.
+  - Rules: `hasOnly` over the 6 keys, `hasAll` over the 3 required ones, `battery is int` 0–100 (Swift `Int` goes to Firestore as an integer), `charging is bool`, `acc` 0–100000, and `locationStampedNow` holds for transactional writes too. A battery-only dotted update is rejected (tested).
+  - Functions only widened the `LastLocation` type; `shouldNotifyCheckIn` is unchanged (6/6), and battery can't change without a re-stamp, so there are no extra pushes.
+- COMPILE (read-only), builder's list:
+  - `.gesture(_:including:)` with `GestureMask` `.all`/`.subviews` is iOS 13. `.scrollDisabled` is iOS 16. `.accessibilityAdjustableAction` with `.increment`/`.decrement`/`@unknown default` is iOS 13.
+  - `DragGesture.Value.time` is a `Date` from iOS 13, and velocity is computed by hand (`Value.velocity` is iOS 17 and not used). `coordinateSpace: .global` keeps the translation stable while the drawer moves under the finger.
+  - `AnyShapeStyle(.regularMaterial)` / `AnyShapeStyle(Color)` in `.background(_:in:)` with a custom `TopRoundedRectangle: Shape` (UIBezierPath, UIKit imported) is iOS 15.
+  - `TimelineView(.periodic(from:by:))` is iOS 15.
+  - `@State var lastSample: (translation: CGFloat, time: Date)?` accepts an unlabelled tuple assignment.
+  - `@ViewBuilder func body(content:)` with an if/else in `RowAccessibilityActions` is fine, as is `accessibilityAction(named: String, handler)` (iOS 14).
+  - `TopStackHeightKey.defaultValue` is a `static let`, which satisfies the get-only requirement.
+  - `CLGeocoder.reverseGeocodeLocation(_:) async throws -> [CLPlacemark]` works.
+  - SF Symbols `battery.0/.25/.100/.100.bolt` are iOS 13 and `battery.50/.75` are iOS 15 (see 7d).
+  - `@MainActor private struct MapHome: View` is allowed. Its memberwise init takes only `available/width/safeTop`, because the private wrapped properties are all default-initialised, and it's called in the same file.
+  - The multiple trailing closures `MemberDrawer(...) { header } content: { list }` match `init(..., header:, content:)`. The `DrawerMemberRow` argument order matches its declaration.
+  - `.accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)` type-checks as `AccessibilityTraits`. `heights.first { }`, `.last { }` and `.min { }` resolve to the `where:`/`by:` methods.
+  - `SOSButton(style:action:)` with a default `style` works for both call forms, and the `switch` inside the `Button` label is fine.
+  - No stale symbols (`MemberDetailCard`, `SelectedMember`, `noLocationText`, `justYouCard`: 0 hits). `UIDevice` access sits inside the `@MainActor` class (including the static `makeShare`).
+- DRAWER:
+  - Snap maths with `available` = safe-top → tab-bar top. SE (598): collapsed 128 → top y 490, half 269.1 → y 349, full 542 → y 76. iPhone 15 (710): 641 / 449.5 / 115. Both match the §11.2 table exactly.
+  - Opens at half, and the snap persists (`@State`). Tapping the handle cycles. Drag works from the handle and header, or anywhere when collapsed (the list is scroll-disabled). Release picks the nearest snap, or the next one on a flick above 500 pt/s, with a spring of 0.35/0.85, or a 0.2 s ease with Reduce Motion. Live height is clamped between collapsed and full.
+  - In full, rows B and C are hidden, the header shows the status text, and the banner becomes the first list item.
+  - SOS: 64 pt, trailing 16, 12 pt above the live drawer top. It fades over the last 40 pt toward full, is hidden when it would overlap the measured top stack, and hit-testing and accessibility turn off below 0.5 opacity. The header SOS capsule shows whenever the floating one is below 1, so SOS is always one tap away.
+  - Fit and centring use the strip between the top stack and the drawer, with the Mercator correction for aspect and a northward centre shift. I checked the maths. A pin tap selects, lifts collapsed to half, centres after the frame resizes, and scrolls the row to the top. Re-tapping the row deselects. A member with no location expands without moving the map.
+- VOICEOVER (§10.4/§11.10):
+  - Pins: `Mum, updated 12 min ago` / `last seen …` / `You, updated …`, hint `Double-tap to show in family list`, plus `.isSelected`.
+  - Handle: `Family list`, value Collapsed/Half/Full, adjustable (increment taller, decrement shorter), default action cycles, `.layoutChanged` posted on every snap.
+  - Row: one element, `Mum, near George St Parramatta, updated 12 min ago, battery 40 percent[, charging]`, `Dad, no location yet`, `You, …`, hint `Double-tap to show on map`. Greyed rows say "show actions", which fits because they don't move the map. The expanded actions are separate buttons and also row custom actions. Battery text is `accessibilityHidden` because it's already in the row label.
+  - Sort priorities give top stack → map → SOS → drawer.
+- PLACE NAMES:
+  - One `CLGeocoder` with one job in flight, a FIFO queue, and a newer coordinate replacing a queued older job for the same uid.
+  - Cache entries are uid + `%.4f,%.4f`. An unchanged key is skipped both in `resolve` and in-flight, and `resolve` runs only on `onAppear` and when `placeKeys` changes, so snapshots that only change time or battery send no geocode.
+  - `acc > 500` or no thoroughfare gives `Near {locality}`, with `subAdministrativeArea` as the fallback. With a number: `Near 12 George St, Parramatta`; without: `Near George St, Parramatta`. Spoken: `near George St Parramatta`.
+  - Pending → `Location shared`, no location → `No location yet`. The file has no Firestore import and nothing is persisted.
+- PRIVACY (grep): these still have 0 hits: `requestAlwaysAuthorization`, `allowsBackgroundLocationUpdates`, `startMonitoringSignificantLocationChanges`, `startUpdatingLocation`, `startMonitoring`, `CLCircularRegion`, `CLLocationUpdate`, `CLMonitor`, `beginBackgroundTask`, `BGTaskScheduler`. `requestLocation()` is the only fix API. project.yml is untouched (`UIBackgroundModes: [remote-notification]`, and the usage string is still the exact §6 text). Battery is read only inside `share()`. Turning on `isBatteryMonitoringEnabled` only unlocks reading the value; it has no background effect. BACKEND §9 (what is stored, who reads it, street addresses, on-device cache, transaction note, "Other Data" privacy label row) matches the code.
+- STRINGS (fixed-string grep): the §6 privacy line is exact in SettingsView.swift:76. Also exact: `Location shared`, `No location yet`, `Just you` / `{n} people`, `Invite your family` / `It's just you for now.` / `Share` (§9.3 share text via `InviteCodeCard.shareText`), `Check in`, `Open in Maps`, `Message`, `Family list` / `Collapsed` / `Half` / `Full`, `Location is off` + body + `Open Settings`, `Sharing…` / `Shared just now`, `Refresh my location`, `Fit everyone`, the SOS label/hint, and both pin and row hints.
+- SCOPE / SECRETS: SOSConfirmSheet is still the stage-4 stub, and Chat and Notification services are unchanged. Nothing from place alerts, history, driving or crash detection. The secrets grep is unchanged: placeholders only.
+
+
+================================================================================
+OVERSEER REVIEW — Stage 3/3.5 final (changed lines only)
+Result: PASS
+(Both should-fix items are fixed, and so are the nits I raised. By reading, nothing blocks and nothing breaks the build. Three small nits are left below and don't need another round.)
+
+Issues:
+1. §11.4 now says "Deselect by tapping the selected row (or its pin) again". Re-tapping a row does deselect, but re-tapping the pin calls `selectFromPin`, which always selects → FamilyMap/Features/Map/MapView.swift (`selectFromPin`) → if `selectedMemberId == memberId`, deselect instead. Or take "(or its pin)" out of the spec   [severity: nit]
+2. In `select`, `guard let coordinate … else { return }` comes before the collapsed → half lift. So a row without a location, which in collapsed is only my own row when I have no fix yet, still expands below the fold → MapView.swift `select(_:liftDrawer:)` → do the lift before the guard   [severity: nit]
+3. Retry pace: `kCLErrorGeocodeFoundNoResult` is thrown, so a member in a place with no geocode result (bush, open water) is retried every 60 s for as long as the app is open. `retryFailures()` on `.active` also skips the 60 s hold-off. Both are bounded (one job in flight, at most the family size), so there's no storm. Optional fix: treat `CLError.geocodeFoundNoResult` as a resolved `.shared`, and keep the hold-off on `.active`   [severity: nit]
+
+Checked OK:
+- (1) Retry timer:
+  - `scheduleRetry` guards `retryTask == nil`, so only one retry is pending. It sleeps 60 s, clears itself, and re-runs `resolve(lastMembers)`, which only re-queues failures older than 60 s. It reschedules only while a failure is still inside its hold-off, and a new failure reschedules through `finish`. There's no tight loop: every path goes through a 60 s sleep or a real geocode result.
+  - `failedAt` is only a hold-off. Results aren't cached on failure, and a success clears the entry.
+  - `retryFailures()` cancels the pending task before it re-resolves.
+  - No leak: the resolver is a `@StateObject` of MapHome, so sign-out, leave or an account switch tears down MainTabView and drops it. `retryTask` and the geocode task capture `[weak self]` and exit within 60 s. A new session starts with a fresh, empty resolver, so no places cross accounts.
+  - The `|r` / `|p` key suffix fixes the rough-to-precise case.
+- (2) `DrawerScrollRequest { let rowId: String; let token = UUID() }`: a `let` with a default isn't in the memberwise init, so `DrawerScrollRequest(rowId:)` compiles. Synthesized `Equatable` compares `token` too, so each new request is a different value, and `.onChange(of: scrollRequest)` (`Optional<Equatable>`) fires on every pin tap, the same member included.
+- (3) Should-fix #1 is closed by the no-caching-on-failure retry and the `.active` retry (`scenePhase` `onChange` in MapHome). Should-fix #2 is closed: `toggleRow` now selects with `liftDrawer: true` (except item 2's edge).
+  - The flick now uses `value.predictedEndTranslation` compared with the release point, ±80 pt. The signs are right: upward gives a positive momentum and the next taller snap. The old `lastSample`/`velocity` state is gone.
+  - The place line is `.lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)` (iOS 15 API).
+  - Battery is `Int((level * 100).rounded())`.
+  - README has a 3.5 row. §10.3 has the late-commit note, and §11.4 documents deselect-by-re-tap (no empty-map tap).
+- (4) `acc` is always a Swift `Int`: `Int(min(horizontalAccuracy, 100000).rounded())`, set only when `horizontalAccuracy >= 0` and omitted otherwise. So it always passes the new `acc is int && 0…100000` rule. The rule test for `acc: 12.5` is added (85 `it(` counted), and the model (`acc: Int?`) and the rules now agree.
+
+
+================================================================================
+OVERSEER REVIEW — Stage 3.6 (Family Places)
+Result: RETURN
+(Privacy is clean, the write shapes match the rules, and by reading nothing breaks the build. I ran both suites here: rules 100/100 on the emulator, functions 19/19, and `tsc --noEmit` is clean. Two small should-fix items in the place editor send this back, about 6 lines in all. First, a place name with an emoji can get a save error that retrying never fixes. Second, search runs while you type, but §12.2 says Return only. The next pass only needs to look at those lines. Everything else is a nit.)
+
+Issues:
+1. The name limit is counted in different units on each side. Swift counts Characters (`newName.count`, `trimmed.count`), but the rules' `size()` counts UTF-16 code units. I checked with a scratch rule on the emulator: 🏠 → 2, 👨‍👩‍👧 → 8, 집 → 1. So a name that fits in 30 Characters but has an emoji passes the local check and is then permission-denied. For example, "Grandma and Grandpa's house 👵🏻" is 29 Characters but 32 units. The editor shows "Couldn't save the place. Try again.", and trying again always fails → FamilyMap/Features/Family/PlaceEditorView.swift:186-187, 588 → measure `utf16.count` in both places. Input: `while name.utf16.count > Place.nameLimit { name.removeLast() }`. Save check: `(1...Place.nameLimit).contains(trimmed.utf16.count)`. Add one rules test to pin it (`"🏠".repeat(15)` succeeds, `"x".repeat(29) + "🏠"` fails), and write "1–30 UTF-16 units (an emoji counts 2+)" in BACKEND-SETUP §7   [severity: should-fix]
+2. Search runs while you type. `onChange(of: query)` → `queryChanged` → `MKLocalSearch` 400 ms after the last keystroke. §12.2 says it "runs on Return (not per keystroke)". Typing sends partial queries to Apple, can hit MapKit's throttle (so "Search didn't work" shows mid-word), and pops the list over the map before the user is done → FamilyMap/Features/Family/PlaceSearchModel.swift:37-40 (called from PlaceEditorView.swift:179-183) → `queryChanged` should only clear (cancel pending; empty → `.idle`), and only `submit` should search. Or the Designer amends §12.2 to allow a debounce   [severity: should-fix]
+3. A save timeout followed by a retry can create a duplicate. `addPlace` makes a new auto-ID on every tap (`document()`) and uses a plain `setData`, which is queued and latency-compensated. Suppose the ack takes more than 10 s: NWPath says online, but the Firestore stream is still reconnecting after a foreground. The editor says "Couldn't save", the row is already in the list behind the cover, and the write still lands later. Tap Save again and you get a second doc → FamilyMap/Core/Services/PlaceService.swift:71, PlaceEditorView.swift:612-631 → generate the ID once per editor session (e.g. `PlaceService.newPlaceId()`) and `setData` that ref on every attempt. If a retry is permission-denied, the first create landed (re-setting `createdAt` is an update, and the rules reject it), so treat that as success. Or accept it and note it in §12.2   [severity: nit]
+4. `placeFor` tie-break parity. Both sides keep the first of equal distances, but they walk the places in different orders: Swift sorts by `createdAt`, and the server's `get()` returns document-ID order. Two places with the same centre (say "Home" and "Nan's" at one address) can read "At Home" in the drawer and "At Nan's." in the push → firebase/functions/src/index.ts:213 → add `.orderBy("createdAt")` to the places query (single-field, no composite index)   [severity: nit]
+5. The editor's "unchanged" baseline can move while it is open. `initialCentre` is a `let`, recomputed on every `PlaceEditorView.init`, and the cover's content closure re-runs whenever FamilyView re-renders. In new mode, `fallbackCentre` is my `lastLocation`, which a foreground `.open` share changes while the editor is up. `centreMoved` then turns true, and Cancel asks "Discard changes?" when nothing changed → PlaceEditorView.swift:51-53, 90-92 → hold the initial centre/name/radius in `@State` so they're set once   [severity: nit]
+6. Only one fix can be in flight. `requestCurrentLocation` throws `alreadyRequesting` while another fix is pending. So if Use my location runs during a foreground share, or the other way round, whichever comes second shows "Couldn't get your location." There is a related path too. The `.open` throttle returns before the auth check, so "Allow Once" can expire unnoticed, and the editor then brings up the permission prompt. Granting it runs `authorizationDidChange → shareIfNeeded`, that share loses to the editor's fix, and the Map tab shows a failure banner → FamilyMap/Core/Services/LocationSync.swift:109,116-119 → in `share`, treat `LocationError.alreadyRequesting` as a silent skip (`clearStatus(); return false`)   [severity: nit]
+7. The places suite has few negative shape tests. The rules are right by reading, but nothing tests: a create with an extra key (`hasOnly`) or a missing one (`hasAll`), an update to `createdAt`, an update that adds a key, an update to radius 600 or icon "car", or a non-member update or delete → firebase/tests/rules.test.mjs:660-741 → add about 6 `assertFails`   [severity: nit]
+8. Docs and carry-forward:
+   (a) BUILD-PLAN.md has no Stage 3.6 section. README has the row ("In review").
+   (b) The 40-char names have the same problem as #1: FamilyOnboardingView.swift:32, SettingsView.swift:106,145, EmailSignInView.swift:107, `AppState.seedName`. Stage 6 is fine.
+   (c) For the rename pass: the §6 privacy line now says "open Pinny" (SettingsView.swift:76 still says FamilyMap), and §12.2 now wants `onAccent` for the selected chip text (the code uses `.white`)   [severity: nit]
+9. Verify on Mac:
+   (a) A member at a place is the main case (Mum at Home). The member pin must draw over the place tile, and a tap where they overlap must reach the pin. `allowsHitTesting(false)` is on the SwiftUI content, but the MKAnnotationView that hosts it may still take the touch.
+   (b) Open an existing place and tap Cancel straight away: no discard dialog, and Save stays disabled. This depends on MapKit never moving the centre more than 1 m on layout or when the keyboard shows.
+   (c) The `mappin` tip sits on the circle centre (glyph padding vs `.frame(height: 40, alignment: .bottom).offset(y: -20)`).
+   (d) If #2 is kept as is: typing fast leaves no "SWIFT TASK CONTINUATION MISUSE … leaked" in the console after `MKLocalSearch.cancel()`.
+   (e) VoiceOver: a slider swipe moves 50 m. `onEditingChanged` may not fire for VoiceOver adjustments, in which case the zoom-out to 80 % never runs. In the editor ZStack the map is declared before the banner and results, but §12.6 orders search, banner, results, map. Place annotations should be read after members (§12.3)   [severity: nit — verify on Mac]
+
+Checked OK:
+- PRIVACY (grep over FamilyMap/ and project.yml): 0 hits for `requestAlwaysAuthorization`, `allowsBackgroundLocationUpdates`, `startUpdatingLocation`, `startMonitoringSignificantLocationChanges`, `startMonitoring` (which also covers `(for:)` and `Visits`), `CLCircularRegion`, `CLBackgroundActivitySession`, `CLLocationUpdate`, `CLMonitor`, `CMMotion`/CoreMotion, `beginBackgroundTask`, `BGTaskScheduler`, `showsUserLocation: true` and `userTrackingMode`.
+  - `UIBackgroundModes` is still `[remote-notification]` only, and `requestLocation()` is still the only fix API. The editor's `Map` shows no user dot.
+  - Places only label. `placeFor` is pure and runs at render time, and nothing about "inside" is stored or monitored. The only new Apple call is `MKLocalSearch` in the editor.
+- WRITE SHAPES vs RULES:
+  - Create sends exactly these keys, which pass `hasOnly` + `hasAll` + `validPlace` + `createdBy == uid()` + `createdAt == request.time`:
+    - `name`, trimmed
+    - `icon`, a rawValue from the 4 cases
+    - `lat` and `lng` as Doubles
+    - `radius` as a Swift `Int`, sent as an integer. It comes from a Double slider stepped by 50, so `Int(radius)` is exact.
+    - `createdBy` = `Auth.currentUser.uid`
+    - `createdAt` = `serverTimestamp()`
+  - Update is `updateData` with only the 5 editable keys, so it passes `affectedKeys().hasOnly`. Delete is allowed for any member.
+  - Location writes add `src` from `LocationSource.rawValue` inside the existing transaction: `open` from `shareIfNeeded`, `manual` from Refresh and Check in. `sos` is defined but not used yet. The rules' `hasOnly` includes `src` and limits the values. Tests: open succeeds; "background" and a number fail.
+- RULES (places block):
+  - Membership goes through `isFamilyMember`, which checks the family doc exists and lists the uid, so a leaver loses access in the same commit (tested).
+  - Field checks: the icon enum, `radius is int` 100–500 (150.5 rejected, tested), lat/lng ranges, and name `size()` 1–30 (but see #1).
+  - Updates can't touch `createdBy`/`createdAt` and can't add keys.
+- COMPILE (read-only), builder's list:
+  - `try await search.start()` returns `MKLocalSearch.Response` (iOS 15 async). `error as? MKError` with `.code == .placemarkNotFound` works through the bridged `MKError.Code`.
+  - `catch let error as CLError where error.code == .geocodeFoundNoResult` is valid. So is `catch LocationError.denied, LocationError.restricted`: enum-case patterns don't need Equatable.
+  - `Slider(value:in:step:) { label } minimumValueLabel: {} maximumValueLabel: {} onEditingChanged: {}` matches the iOS 13 init. Both value labels have the same type, because `Text.font` returns `Text` and `.accessibilityHidden` then wraps both the same way.
+  - `Map(coordinateRegion:interactionModes:)` with `[.pan, .zoom]` is the iOS 14 `_DefaultMapContent` init, with no annotations.
+  - `.fontWeight(.bold)` on View and `ViewThatFits(in:)` are iOS 16.
+  - `.fill(.regularMaterial)` and `.background(.thinMaterial, in: Capsule())` are iOS 15. `.fullScreenCover(item:)` is iOS 14.
+  - The delete `confirmationDialog(_:isPresented:titleVisibility:presenting:actions:message:)` resolves to the `StringProtocol` overload, since the title is a `String` expression. It sits next to the existing Leave dialog with its own binding, which is fine on iOS 15+.
+  - `share(force:)`: 0 hits. The call sites are `share(source: .manual)` (MapView.swift:644) and `shareIfNeeded()` (MainTabView twice, plus the LocationSync auth change).
+  - `MapAnnotationItem` is a file-private enum. Its `String` id is prefixed `place-`/`member-`, so ids never collide.
+  - In `Map(annotationItems:)`, the `@ViewBuilder` switch gives `_ConditionalContent`, and `places.map(MapAnnotationItem.place)` uses the enum case as a function.
+  - Environment: the cover injects `appState`, `appState.locationService` and `appState.locationSync` explicitly. So all three `@EnvironmentObject`s in the editor are satisfied, whatever the inheritance rules.
+  - `PlaceEditorView.init` assigns every stored property that has no default (`target`, the 3 `initial*`, `_region`, `_name`, `_radius`). The static `openingRegion` call before init finishes is allowed, and the shadowing locals are used correctly.
+  - `withTimeout` is a new, unique name and uses the same single-resume gate as `LocationSync.write`. A late result is ignored, and the timer is cancelled once the operation ends.
+  - Two more small ones: `.min { … }?` followed by `.place` on the next line is a valid optional chain, and `AppState()`'s only call site uses the defaults.
+  - project.yml takes the whole `FamilyMap` folder as its source, so the new files are in the target.
+- LOGIC:
+  - The 10-place cap:
+    - At 10, the Add row is hidden and the footer `Up to 10 places.` shows; it shows at no other count.
+    - For a new place, both the editor and `AppState.addPlace` check the count again.
+    - Two members adding at the same moment can reach 11, which contract §3 accepts.
+  - Delete:
+    - Swipe, with no full swipe. The button isn't `role: .destructive`, so the row doesn't animate away before the dialog.
+    - The dialog says `Delete {name}?` / `It's removed for everyone in your family.`.
+    - Reachability is checked first, and errors show as an ErrorBanner at the top of the list.
+  - Editor:
+    - Cancel is the only exit. The discard dialog shows only when the name, radius or centre changed, and Cancel is disabled while saving.
+    - Save is disabled when the name is empty, while saving, and in edit mode when nothing changed.
+    - Checks run in order: name → cap → online → write, with a 10 s timeout. On success it plays the success haptic and dismisses.
+  - Use my location:
+    - It takes one `requestCurrentLocation()` (15 s timeout), and the fix only recentres `region`. There's no Firestore write, no status capsule and no push.
+    - Denied shows the Location is off banner, and the button stays enabled.
+    - `CancellationError` on sign-out is silent.
+  - The throttle applies only to `.open` (checked before auth); `.manual` skips it.
+  - The places listener starts and stops with the family and members listeners: join, create, family change, leave (restarted if the leave fails), sign-out and account deletion.
+    - `hasLoadedPlaces` resets on stop, and `places` is cleared on sign-out, needs-family and leave.
+    - Snapshots are guarded by `observedFamilyId`.
+  - Drawer:
+    - `placeLine` checks "At {name}" first.
+    - Members inside a place are left out of `membersToGeocode`, so they cost no `CLGeocoder` call.
+    - `placeKeys` changes when someone enters or leaves a place, so leaving one geocodes again.
+  - Map tab:
+    - Places are left out of the first fit and Fit everyone (`fitCoordinates` uses pins only).
+    - `lastMapCentre` is set when the Map tab disappears and cleared on auth change.
+  - Last pass's 3 nits are closed. Re-tapping a pin deselects. The lift runs before the no-location guard. `geocodeFoundNoResult` now counts as resolved, and the `.active` retry keeps the 60 s hold-off.
+- placeFor PARITY (Swift vs functions/src/places.ts):
+  - Same predicate: `acc ≤ radius` per place (legacy nil allowed), then distance ≤ radius (inclusive), then the nearest wins. Both sides keep the first of equal distances; #4 covers the order.
+  - Distance: Swift uses `CLLocation.distance(from:)`, which is Apple's model (ellipsoidal); TS uses haversine with R = 6 371 008.8 m. At 500 m or less they differ by well under 1 %, a couple of metres at most. So only a fix within about 2 m of the edge can disagree between the drawer and the push. Accepted, no change.
+- BACKEND:
+  - `shouldNotifyCheckIn` returns false for `src == "sos"` before the debounce is checked (tested for a first share and for one 15 min later). `open`, `manual` and absent take the old path, and the 10-min debounce is unchanged.
+  - `onLocationUpdated` reads places only when someone has opted in. The copy is exact: title `${name} checked in`, body `At ${place.name}.` or `Tap to see where they are.`. This closes carry-forward 6(a) from Stage 3.5.
+  - `purgeFamily` runs `recursiveDelete` on `families/{id}/places` alongside the chat, on the "gone" path as well. Nothing can be re-added mid-sweep, because the rules need the family doc.
+  - Ran: `node --test` 19/19, `tsc --noEmit` clean, and the rules `npm test` on the emulator 100/100 (12 in places).
+  - BACKEND-SETUP §5, §7, §8 and §9 match the code. That includes both contract §7 sentences word for word, the note that places stay with the family on account deletion, and the place name in the push body under "Copies elsewhere".
+- SPEC vs SWIFT:
+  - Fixed-string grep, one hit each:
+    - Family tab: `Up to 10 places.`, `Add places like Home or School to see who's there.`
+    - Labels: `At \(place.name)`, `Place, \(place.name)`
+    - Radius: `{n}\u{00A0}m` shown, `{n} metres` spoken
+    - Editor: `New place` / `Edit place`, `Search for an address`, `No results. Try a street or suburb.`, `Search didn't work. Try again.`, the offline string, `Discard changes?` / `Discard` / `Keep editing`
+    - Save and delete errors: `Give the place a name (1–30 characters).`, `Your family has 10 places. Delete one first.`, `Couldn't save the place. Try again.`, `Couldn't delete the place. Try again.`, `Delete {name}?` / `It's removed for everyone in your family.`
+    - Location: `Location is off` / `Search for an address, or turn it on in Settings.` / `Open Settings`, `Couldn't get your location. Try again.`
+  - VoiceOver:
+    - Place row: `Home, radius 150 metres`, hint `Double-tap to edit`.
+    - Slider: `Radius` / `150 metres`. Editor map: `Place map` / `Circle radius 150 metres`.
+    - Drawer row: `Mum, at Home, updated 12 min ago, battery 40 percent`.
+  - The Settings privacy line ends with the contract §7 sentence.
+  - The visuals match §12.1–12.3: sizes, fills, the symbol map, 80 pt truncation and no shadow. I checked the circle maths: 60 % first zoom, the Mercator width, and the 80 % zoom-out when the slider is released.
+- SCOPE / SECRETS:
+  - SOSConfirmSheet, ChatService and NotificationService haven't changed since 3.5. Nothing from place alerts, history or monitoring.
+  - Secrets grep: only the `GoogleService-Info.plist.example` placeholder. No real plist, `.p8`, service-account or `.env` files.
+
+
+================================================================================
+OVERSEER REVIEW — Stage 4 + 5 (notifications, SOS, chat) + Stage 3.6 return + Pinny rebrand
+Result: RETURN
+(Privacy is clean. Every write shape matches the rules. Push wiring and tap routing are right. By reading, nothing breaks the build. I ran both suites here: rules 128/128 on the emulator, functions 30/30, and `tsc --noEmit` is clean. All Stage 3.6 return items are fixed. One SOS blocker sends this back: an SOS that shows "Couldn't send" can stay in Firestore's persisted write queue, then reach the family hours later as a new SOS. The fix is about 4 lines and uses the same transaction pattern as location. There are also 3 should-fix items: two about SOS location and one chat paging gap. There's one store-submission item in the privacy manifest. The rest are nits.)
+
+Issues:
+1. A failed SOS can be sent later as a new SOS. `create` uses a plain `ref.setData` (ChatService.swift:131). Firestore adds that write to its on-disk queue straight away and replays it until the server accepts it, including on a later launch. The SOS sheet's reachability check only covers a device that is fully offline. On a weak or captive connection, NWPath still says "satisfied", the write isn't confirmed within 10 s, and the sheet shows `Couldn't send SOS. Try again, or call 000.`. The user calls 000 and the emergency ends. When Pinny is next opened with a connection (maybe hours later), the queued write commits with a new server `createdAt`. `onSOSMessage` then sends a time-sensitive `🚨 SOS from Mum` / `Location unavailable.`, and a new SOS card appears in chat. That is a false alarm from an emergency that is already over. A related case: the Failed state can be swiped away, and opening SOS again makes a new `SOSFlow` with a new message ID. The old queued write and the new one can then both land, so the family gets two SOS pushes → FamilyMap/Core/Services/ChatService.swift:121-146; FamilyMap/Features/SOS/SOSConfirmSheet.swift:78-90 → write the message as a write-only transaction, like `FamilyService.updateLocation`: `_ = try await db.runTransaction { tx, _ in tx.setData(fields, forDocument: ref); return nil }`. Keep the existing catch: permission-denied means the doc exists, so a server read that finds it counts as sent. A transaction fails when the connection is gone and is never replayed, so Try again is the only retry and "one SOS, never two" holds across sheets and launches. Use the same path for normal messages too: the outbox already draws the pending bubble, and it makes "Delete (local only — it was never sent)" true (see #7). Verify on Mac: turn on Network Link Conditioner "100% Loss" → SOS → Failed → Done. Restore the network and relaunch → no new message in `chats/{familyId}/messages`, and no push   [severity: blocker (SOS false alarm)]
+2. SOS location robustness. Both parts are small and both are in the SOS path:
+   (a) An app-open share that is still running makes the SOS go out without a location. `waitForShareInFlight` waits at most 3 s. After that, `share(source: .sos)` hits `guard status != .sharing` and returns false straight away. "Open Pinny and press SOS" is the main panic case. A cold GPS fix indoors often takes longer than 1.5 s hold + 3 s. The SOS then goes out with `Location unavailable.`, while the open share lands a moment later with `src: "open"` and a fresh stamp. If that share is 10+ min after the last one, it also sends a check-in push → FamilyMap/Features/SOS/SOSConfirmSheet.swift:69-73,96-102; FamilyMap/Core/Services/LocationSync.swift:88 → let `.sos` take over a share that is still waiting for its fix: bump `generation` and call `locationService.cancel()`. The earlier share's CancellationError is already swallowed by the generation guard. A share that has already reached `write()` must still be awaited. That wait is bounded at 10 s and is normally under 1 s. Otherwise its `src: "open"` write can land after the SOS write, and `sosBody` would then say `Location unavailable.` (track `isWriting`).
+   (b) The cached-fix fallback only runs on `LocationError.timedOut`. Indoors, or with Wi-Fi off, `requestLocation()` often fails quickly with `kCLErrorLocationUnknown`. The SOS then goes without a location even when `manager.location` holds a fix that is ≤ 2 min old → LocationSync.swift:153-161 → fall back to the cached fix on any Core Location error or timeout (not on `CancellationError`)   [severity: should-fix (SOS)]
+3. Chat paging gap. The listener stops in `onDisappear` whenever you leave the Chat tab, and it also goes quiet while the app is suspended. Say `live` holds messages 1–100 and 150 new ones arrive before the next server snapshot. That snapshot is 151–250. `handle` moves 1–100 into `older`, and `rebuild` shows 1–100 followed by 151–250 with no marker. `Load earlier` anchors on the oldest confirmed message (#1), so 101–150 never appear. In an emergency the family chat gets busy, so the missing block can include an SOS card → FamilyMap/Features/Chat/ChatViewModel.swift:155-171,272-275 → in `handle`, when `isFull` and the new window shares no confirmed id with the previous `live`, clear `older` and set `hasPaged = false` before merging. Load earlier then continues from the new window's oldest message   [severity: should-fix]
+4. The privacy manifest misses a required-reason API. `@AppStorage("didOfferNotificationPriming")` (MainTabView.swift:9) is UserDefaults, but `NSPrivacyAccessedAPITypes` is empty. The file's own comment says to add CA92.1 when this happens. App Store Connect rejects uploads (ITMS-91053) whose code uses a required-reason API it hasn't declared → FamilyMap/Resources/PrivacyInfo.xcprivacy:5-11,124-125 → add `{ NSPrivacyAccessedAPIType: NSPrivacyAccessedAPICategoryUserDefaults, NSPrivacyAccessedAPITypeReasons: [CA92.1] }` and update the comment   [severity: should-fix (store submission)]
+5. The SOS cached fix is stamped as fresh. This is accepted, but flagged as asked. A cached fix up to 2 min old is written with `src: "sos"` and `updatedAt: serverTimestamp()`. So the push says `Tap to see where they are.` and the drawer shows "Updated just now" for a position that can be about 2 min old (about 2 km at 60 km/h). I accept this for SOS: §13.3 chose it, an approximate position beats none, and the push copy doesn't claim the position is fresh. The rules can't store a fix time because `updatedAt == request.time`. It isn't written down anywhere though → docs/DESIGN-SPEC.md §13.3 "Sharing location" row; docs/BACKEND-SETUP.md §7 SOS row and §9 → add one sentence: "an SOS location can be up to 2 min older than its timestamp (cached fix)". Optionally cut the cache age to 60 s   [severity: nit — doc (owner-visible trade-off)]
+6. A push tap for a member with no location only opens the Map tab. `handleFocusRequest` returns before `showMember` when there's no pin. So an SOS or check-in tap from someone who has never shared doesn't expand their row, although §13.5 and §11.4 say a member with no location "only expands (no map move)" → FamilyMap/Features/Map/MapView.swift:632-641 → when there is no coordinate, still call `showMember(memberId)` (it already skips the map move)   [severity: nit]
+7. Other timed-out writes can land later:
+   (a) Chat. The code says a deleted failed message "shows again" if its queued write lands. §13.4 says Delete is local only because the message "was never sent". Closed by #1's transaction; otherwise amend §13.4 → ChatViewModel.swift:74-76,209-214.
+   (b) The Check-in alerts toggle. The toggle flips back after 10 s, but the queued `updateData` stays in the queue. The user listener then holds the pending value, and `onChange` doesn't fire again, so the toggle shows the old value while the server gets the new one → SettingsView.swift:217-236 → after a timeout, set the toggle from `appState.currentUser?.notifyOnCheckIn`, or use a transaction   [severity: nit]
+8. Dead code. The `ChatService` extension's "Stage 1 signatures, kept for existing callers" (`observeMessages`, `send(text:familyId:sender:)`) has 0 callers → FamilyMap/Core/Services/ChatService.swift:38-51 → delete   [severity: nit]
+9. Docs:
+   (a) README.md:43 still says Stage 5 "TODO".
+   (b) BUILD-PLAN.md:52-62: Stage 4 still says "persist `fcmToken`", and there is still no Stage 3.6 section.
+   (c) BACKEND-SETUP.md:282 says the toggle writes `{ notifyOnCheckIn }` alone. Swift also sends `updatedAt: serverTimestamp()`. Both pass the rules; align the doc.
+   (d) DESIGN-SPEC §3.7 (lines 202-205) and §6 (line 332) still carry the retired delete-account copy ("…and your messages", "Type DELETE"), which contradicts §9.4. The code follows §9.4.
+   (e) The §3.1 wireframe says `Use email instead`; Swift says `Sign in with email`. Pick one.
+   (f) PinnyMascot @2x/@3x are 240×289 / 360×433, 1 px taller than 2×/3× of 120×144. Harmless   [severity: nit]
+10. Verify on Mac:
+   (a) Concurrency warnings. `UIApplicationDelegate` is MainActor in the iOS 16+ SDK, so AppDelegate is inferred MainActor. Its `MessagingDelegate` and `UNUserNotificationCenterDelegate` witnesses are therefore MainActor-isolated. Swift 5.9 minimal checking accepts this (these ObjC protocols are imported as `@preconcurrency`); expect at most warnings.
+   (b) `View.accessibilityActions { }` (the ViewBuilder form) is iOS 16.0, and the empty `.contextMenu` on a sending bubble shows nothing on long-press. Check both on an iOS 16.0 simulator.
+   (c) Hold button: release at 1.4 s → nothing sent, `Keep holding to send.` shows. Drag more than 44 pt off the button → cancelled. A system cancel mid-hold (pull down Notification Centre) resets `@GestureState` → cancelled. With VoiceOver, the `Send SOS` action fires, and a plain double-tap does not.
+   (d) At the medium detent on an SE at default text size, the Sent and Failed states fit with both buttons visible.
+   (e) `tel://000` shows the system call confirmation on a device (cancel it there). On the simulator it does nothing, which is expected.
+   (f) Cold start from an SOS push: the first fit runs, then the camera centres on the sender and their row expands. In the foreground, SOS shows a banner with sound and check-in a silent banner. On a TestFlight build, the SOS push breaks through Focus (Time Sensitive).
+   (g) `Load earlier` keeps the scroll position. The priming sheet never stacks with the location alert on first launch   [severity: nit — verify on Mac]
+
+Checked OK:
+- PRIVACY (grep over FamilyMap/ and project.yml):
+  - 0 hits for `requestAlwaysAuthorization`, `allowsBackgroundLocationUpdates`, `startUpdatingLocation`, `startMonitoring*`, `significantLocation`, `CLCircularRegion`, `CLLocationUpdate`, `CLMonitor`, `CLBackgroundActivitySession`, `CoreMotion`/`CMMotion`, `beginBackgroundTask`, `BGTaskScheduler`, `showsUserLocation: true` and `userTrackingMode`.
+  - `requestLocation()` (LocationService.swift:89) is still the only fix API. SOS reads `manager.location` (cached, starts nothing) and asks for a fix only when location is already authorised. It never prompts.
+  - `UIBackgroundModes: [remote-notification]` only. The usage string resolves to the exact §6 text through `$(APP_DISPLAY_NAME)`.
+- WRITE SHAPES vs RULES:
+  - pushTokens: `setData(["token", "updatedAt": serverTimestamp()])` replaces the whole doc with exactly `hasOnly`/`hasAll`, and the owner is the doc id. The write happens only when notifications are allowed, after a `.server` read that shows the doc missing or holding a different token, and only if `Auth.currentUser.uid` still matches after the read.
+  - Sign-out, in order: `pushTokens/{uid}` delete (5 s best effort, skipped offline) → `Auth.signOut()` → `Messaging.deleteToken()`. `isSigningOut` blocks any token save in between. Account deletion deletes only the local FCM token; `onUserDeleted` removes the doc.
+  - `AppUser` has no `fcmToken`. The 7 hits for `fcmToken` are the SDK's own names (the delegate parameter and `Messaging.fcmToken`).
+  - notifyOnCheckIn: `{notifyOnCheckIn: Bool, updatedAt: serverTimestamp()}` passes `validUser` and doesn't touch `lastLocation`.
+  - Chat create sends exactly 5 keys: `senderId` (= uid), `senderName` (`storedName`: trimmed, UTF-16 clamp 40, "Family member" fallback), `text` (trimmed, 1–1000 UTF-16), `type`, `createdAt` (server timestamp). The ID is client-made (`document().documentID`) before the first write and reused on retry. On any error the code does a `.server` read and treats the send as done only if the doc exists. It checks, it doesn't assume.
+  - SOS message: `text: "SOS"` (`ChatMessage.sosText`), `type: "sos"`. The SOS location goes through the same transaction as a normal share, with `src: "sos"`.
+  - Places: a stable ID per editor session (`@State newPlaceId`), and permission-denied + exists = success.
+  - UTF-16 everywhere: names 40 (onboarding, Settings alert, email sign-up, `seedName`), place 30, chat 1000 (cap, counter and validation all use `utf16.count`; `clamp` never splits a character).
+- SOS (strict pass):
+  - The hold can't fire by accident:
+    - The map tap only opens the sheet. The sheet needs 1.5 s of continuous contact through `DragGesture(minimumDistance: 0)` + `@GestureState`.
+    - An early release, a drag more than 44 pt off, or a system cancel runs `cancel()` (the task is cancelled and nothing fires). After a drag-off, `isPressed` stays true, so the same touch can't restart the hold.
+    - Haptics: light at 0.5 s and 1.0 s, heavy at 1.5 s. Reduce Motion: no fill animation, and the ring jumps to full.
+    - A double fire is blocked by `phase == .confirm` plus `isRunning`.
+  - Order: an offline check first (instant offline copy) → the location share, awaited → the message.
+    - Location off, no fix, or a failed location write: the SOS still sends, and Sent shows `Sent without your location.`.
+    - Try again reuses `messageId` and needs no second hold.
+  - Sent is set only after `sendSOS` returns within the timeout. That means a server ack, or a server read showing the doc exists. No path shows "sent" when nothing was written.
+  - The sheet can't be swiped away while holding, sharing or sending, and those states have no Cancel. Sent stays up until Done (no auto-dismiss).
+  - Failure copy is exact: `.network` gives the connection string; timeout and other errors give `Try again, or call 000.`. `Call 000` is `tel://000` with the label `Call triple zero`. The state announcements are exact. The flow's Task keeps running even if the sheet goes away.
+- SERVER `sosBody` vs CLIENT timing:
+  - The client commits the location before it starts the message. The gap is the message latency, at most the 10 s timeout, well inside 60 s.
+  - A Try again after more than 60 s shares again, which gives a fresh stamp. If that share fails, both sides say "without location".
+  - Shares on this device are serialised: `status != .sharing`, and the `.open` throttle is set by the SOS share. So no `src: "open"` write can land between the SOS location and the message today. #2(a)'s fix has to keep that true.
+- PUSH:
+  - `UNUserNotificationCenter.delegate` and `Messaging.delegate` are set in `didFinishLaunching`, after `FirebaseApp.configure()`.
+  - The APNs token is passed to `Messaging.apnsToken` explicitly, so it doesn't depend on swizzling. `FirebaseAppDelegateProxyEnabled` is left at its default, which is harmless.
+  - `registerForRemoteNotifications()` runs at launch without a prompt, and again after the prompt is granted.
+  - Token → AppState goes through NotificationCenter, and the save needs `observedUid` (signed in). Every launch or sign-in syncs, and so does a switch from not-allowed to allowed on foreground.
+  - `willPresent`: SOS → `[.banner, .sound, .list]`, anything else → `[.banner, .list]`.
+  - A cold-start tap waits in `AppDelegate.pendingPush` until `onPushOpened` is set, then in `pendingPushRoute` until `.ready` + the first members snapshot. It is routed only when `familyId == currentUser.familyId` and the uid is in `members`. Signed out or no family → Map tab only.
+  - Payload keys `type`/`uid`/`familyId` are the same in `sendToTokens` data and `PushRoute`.
+- CHAT:
+  - The listener starts on appear and on a family change, and stops on disappear. It is guarded by `familyId`, and errors detach it. The ViewModel is view-owned, so sign-out, leave or an account switch tears it down.
+  - The listener takes the newest 100, `createdAt desc`, with `includeMetadataChanges`. `data(with: .estimate)` fills pending times.
+  - Load earlier: `start(afterDocument:)` on the oldest confirmed message, with a (createdAt, id) tie-break that matches Firestore's implicit `__name__` order. It fetches once, with a spinner, and the scroll is anchored.
+  - States: Sending shows 60 % + `Sending…`. Failed shows the icon + `Not sent. Tap to retry.` in `sosRedText`; tap retries, and the context menu and VoiceOver actions offer Retry/Delete. Offline → failed at once, and the offline ErrorBanner shows while offline.
+  - Auto-scroll happens when the message is mine or I'm within 80 pt of the bottom; otherwise the `New messages` capsule shows.
+  - Grouping: same sender, ≤ 5 min, same day, normal type only. Day separators: Today/Yesterday/weekday/`EEE d MMM` (en_AU, lowercase am/pm).
+  - The SOS card: `Show on map` is hidden without a location or for a former member, and labelled `Show {name} on map`. A new SOS from someone else is announced.
+  - Accessibility follows §13.6: bubble label + `, sending`/`, not sent`, the counter `912 of 1000 characters`, `Send`, and header traits.
+  - Empty state: mascot 60×72 and exact copy.
+- COMPILE (read-only), builder's list:
+  - `Messaging.deleteToken() async throws` (SDK 11, imported from the completion form).
+  - `notificationSettings()` / `requestAuthorization(options:)` async (iOS 15).
+  - `UIApplication.openNotificationSettingsURLString` (iOS 16.0).
+  - `@Published` with `didSet` (`oldValue` is fine).
+  - `@MainActor` stored property with `didSet` on AppDelegate, set from `.onAppear` (MainActor).
+  - `@GestureState` + `.onChange(of:)` (Bool).
+  - `.presentationDetents([cond ? .large : .medium])` (array literal → Set).
+  - `QueryDocumentSnapshot.data(with:)`, which is non-optional on the query snapshot.
+  - Async `getDocument(source:)` / `getDocuments(source:)`, `addSnapshotListener(includeMetadataChanges:)`, `start(afterDocument:)`.
+  - `TextField(axis: .vertical)` + `.lineLimit(1...5)` (iOS 16), `.background(.bar)`.
+  - `accessibilityAddTraits(isFailed ? .isButton : [])`.
+  - `SOSFlow.Phase` Equatable is synthesized.
+  - Switches are exhaustive: Phase (5 cases), Delivery, Row, AuthState in `applyPendingPushRoute`.
+  - No dynamic `UIColor { }` is used.
+  - Environment objects: the SOS sheet injects appState, locationService and locationSync; the priming sheet injects appState.
+  - `withTimeout` is `@MainActor`, which is fine from the non-isolated `FirebaseNotificationService` with `await`.
+  - Stale symbols: `StubChatService`, `StubNotificationService`, `ChatColor`, `relativeLabel`, `MemberDetailCard`, `share(force:` — 0 hits.
+- REBRAND:
+  - No user-facing "FamilyMap" is left. The only literals are internal ids (Notification name, two dispatch-queue labels).
+  - `CFBundleDisplayName = $(APP_DISPLAY_NAME)` = Pinny, bundle id `com.skyline.pinny`, and it matches the local plist.
+  - Colour sets match §5: AccentColor #0A7A6E/#2FC7B5, OnAccent #FFFFFF/#000000, SOSRed #D0021B in both modes, SOSRedText #D0021B/#FF453A.
+  - `sosRed` is used only for fills. All red text and small glyphs use `sosRedText`: the ErrorBanner icon, failed chat, the counter at 1000, the SOS failed icon, Leave/Sign out/Delete, low battery.
+  - Filled PrimaryButton text and the selected chip use `onAccent`.
+  - Welcome copy is exact. `PinnyMascot` appears 3 times (Welcome 120×144 → 80×96 at accessibility sizes, the Family "just you" state, and Chat empty) and is always hidden from VoiceOver. Welcome's bob is static under Reduce Motion.
+  - The app icon is 1024², RGB, with no alpha. The privacy line, the version footer, `Pinny` in the share text and the toggle subtitle all say Pinny.
+- STAGE 3.6 RETURN: all fixed.
+  - #1 UTF-16 (`utf16.count` input clamp and save check, plus the 🏠×15 / 29+🏠 rules tests).
+  - #2 search on Return only (`queryChanged` only cancels and clears).
+  - #3 stable place ID + retry: the ID is reused, permission-denied + exists → success, and a retry doesn't count its own place toward the cap.
+  - #4 `orderBy("createdAt")`.
+  - #5 the baseline is in `@State`.
+  - #6 `alreadyRequesting` is a silent skip.
+  - #7 negative tests (icon, radius, createdBy, non-member).
+  - #8(b)/(c): 40-char names use UTF-16, the privacy line says Pinny, and the chip uses onAccent. #8(a) is partly done (see #9b).
+- BACKEND:
+  - Ran here: functions `npm test` 30/30 (checkin, places, sos, token) and `tsc --noEmit` clean. Rules `npm test` on the emulator: 128/128 across 9 suites. The "stage 4" suite covers owner-only tokens (no family get/list/query), shape/size/`request.time`, `fcmToken` rejected on create and update, the notify toggle, the SOS flow, and a same-ID retry rejected + exists.
+  - `onSOSMessage` is SOS-only (chat sends no pushes), ignores `notifyOnCheckIn`, and uses priority 10 + time-sensitive.
+  - `sosBody`: `src == "sos"` and age ≤ 60 s (negative ages count).
+  - `onLocationUpdated` skips `src: "sos"`.
+  - `onUserTokenWritten`: `tokenChanged` guards against loops.
+  - `onUserDeleted` deletes `pushTokens/{uid}` in the same transaction.
+  - Dead tokens delete `pushTokens/{uid}`.
+  - `privacy.html` (push token, chat incl. SOS, battery, trigger source, no coordinates in pushes) and PrivacyInfo (Device ID, Other User Content, Other Data) match BACKEND §9, except for #4.
+- SCOPE / SECRETS:
+  - No chat pushes (`onSOSMessage` returns for `type != "sos"`). No history, monitoring or background features.
+  - Secrets: a real `GoogleService-Info.plist` is now in `FamilyMap/Resources/` for local builds. It is listed in `.gitignore`, but the folder isn't a git repo yet, so check `git status` on the first commit. Firebase iOS API keys identify the project; they aren't secrets. No `.p8`, `.p12`, service-account, `.env` or private-key files.
+
+
+================================================================================
+OVERSEER REVIEW — Stage 4 + 5 re-review (changed lines only)
+Result: PASS
+(The blocker and all 3 should-fix items are fixed, and so is every nit I raised. By reading, nothing breaks the build. `git diff` against f9986a0 shows no changes under `firebase/`, so the suites from the first pass still apply: rules 128/128, functions 30/30, `tsc` clean. Two small nits below; they don't need another round.)
+
+Issues:
+1. Accepted trade-off, noted so it isn't raised again. A send or SOS transaction can commit after the 10 s UI timeout. The SDK retries a failing commit several times with backoff, so "a few seconds" can stretch to tens of seconds. That is still the same app session, and it is never replayed on a later launch. The late commit reaches the listener, and `handle` clears the outbox entry, so a failed chat bubble turns into a sent one by itself. For SOS, Try again resolves to Sent through the permission-denied → exists path. Both directions are safe   [severity: info — accepted]
+2. Leftovers. Own writes are now transactions, so they never make a local pending doc. `includeMetadataChanges: true` on the chat listener and the `isPending` branches in `rebuild` and `handle` no longer have anything to handle, because no other local writes exist. They're harmless. Dropping `includeMetadataChanges` would save a snapshot per commit → FamilyMap/Core/Services/ChatService.swift (listener), FamilyMap/Features/Chat/ChatViewModel.swift   [severity: nit — optional]
+
+Checked OK:
+- #1 (blocker, closed):
+  - `create` now runs `db.runTransaction { transaction, _ in transaction.setData(fields, forDocument: ref); return nil }` (ChatService.swift:127), with the same 5 keys and a server `createdAt`. The catch still does the `.server` read, and exists = sent. On an existing ID, the transaction's set is an update, which the rules refuse with permission-denied. Transactions don't retry on that, so the catch runs.
+  - Offline, the transaction fails and nothing is queued. A failed SOS can't reach anyone on a later launch, and a new sheet can't produce a second SOS from an old queued write.
+  - Outbox: with no local pending doc, the outbox alone draws Sending/Failed. `markSent` puts the confirmed copy in `older` until the listener brings the server doc, and both are keyed by id, so there are no duplicates. If the snapshot arrives before `markSent`, `outbox.removeValue` returns nil and it is a no-op.
+  - Delete is truly local now: `discarded` and its filter are gone, and there is nothing left in the queue.
+- #2a SOS takeover (LocationSync.swift:92-96,166-179):
+  - `.sos` meeting `status == .sharing` calls `takeOverShareInFlight()`. A share still waiting for its fix is abandoned at once: `generation += 1`, `locationService.cancel()` (its CancellationError lands in the generic catch and returns early at the generation guard), and `clearStatus()`.
+  - A share with `isWriting == true` is polled every 100 ms until it ends, bounded by the 10 s write timeout.
+  - The new generation guard before `write` (line 124) closes the window where the old fix has resumed but its task hasn't run yet: it writes nothing.
+  - `isWriting` is set right before `write` and cleared by `defer`, including on a throw.
+  - The SOS then takes a fresh `started`. `SOSFlow`'s 3 s wait is gone.
+  - Only `.sos` takes over. Every other trigger still returns early while a share runs. A late CL fix from the abandoned request can resolve the SOS's own continuation, which is still a real, fresh fix.
+- The SOS also takes over a fix requested outside LocationSync: `currentFix(for: .sos)` calls `locationService.cancel()` first (line 187), which is a no-op when nothing is in flight. The place editor catches `CancellationError` silently (PlaceEditorView.swift:551).
+- #2b `allowsCachedFix` (line 203):
+  - Falls back on `LocationError.timedOut`, or on a `CLError` whose code isn't `.denied`.
+  - No fallback after `CancellationError`, `LocationError.denied/.restricted`, or `alreadyRequesting`.
+  - The fallback needs the cached fix to be ≤ 2 min old, and otherwise rethrows the original error.
+  - Compiles: `LocationError` has no associated values, so it is Equatable, and `(error as? LocationError) == .timedOut` resolves through Optional. `error as? CLError` bridges from `kCLErrorDomain`.
+  - Not falling back after `.denied` respects the user's choice.
+- #3 paging gap (ChatViewModel.swift:155-166): when the snapshot is full and shares no confirmed id with the previous `live`, it clears `older` and sets `hasPaged = false`. Load earlier then continues from the new window's oldest message.
+  - A cold VM that gets a stale cache window and then the server window resets an empty `older`, which is harmless.
+  - A contiguous jump (exactly 100 new messages) also resets, which is harmless: pages are fetched again.
+  - My just-sent message is the newest, so it is always in the new window.
+- #4 PrivacyInfo:
+  - `NSPrivacyAccessedAPICategoryUserDefaults` / `CA92.1` is declared, with the comment updated.
+  - Grep over FamilyMap/ for the other required-reason APIs (`systemUptime`, `mach_absolute_time`, file timestamps, `attributesOfItem`, `volumeAvailableCapacity`, `statfs`/`stat(`, `activeInputModes`, `@SceneStorage`, other `UserDefaults`) finds 0 hits. `@AppStorage` (MainTabView.swift:9) is the only use.
+- #6 `handleFocusRequest` centres only when there's a pin, then always calls `showMember`. `select` skips the map move when there's no coordinate and still lifts the drawer and expands the row.
+- #7b The toggle now uses a transaction (FamilyService.swift:156). On failure the toggle falls back to `appState.currentUser?.notifyOnCheckIn` (the listener's server value, which is right because no local pending write exists). A late commit arrives through the listener's `onChange` after `isSavingNotify` clears.
+- #8 The Stage 1 `ChatService` extension is deleted. It had no callers, and grep finds 0 hits for `observeMessages` / `send(text:familyId:sender:)`.
+- #9 Docs:
+  - README says Stage 5 "In review".
+  - BUILD-PLAN has a Stage 3.6 section, and Stage 4 says `pushTokens/{uid}`.
+  - BACKEND §7: the toggle row lists `+ updatedAt` and says transaction, the chat row says transaction, and the SOS row has the "up to 2 min older than its timestamp" sentence. §9 has the same sentence.
+  - DESIGN-SPEC: §3.7 points to §9.4, and §6 has the §9.4 step-1 copy. §13.3 has the cached-fix sentence. §13.4 says failed sends never auto-retry.
+  - Welcome says `Use email instead` (§3.1).
+
+
+================================================================================
+OVERSEER REVIEW — Stage 6: final gate before TestFlight
+Result: PASS
+(No crash, data-loss, false-SOS, privacy or store-rejection blocker in the code. Nothing has been compiled by a reviewer: the first Codemagic run (`xcodegen generate` + archive) is the real build gate. Before the first build goes out, work through the pre-flight list in item 1, which is mostly console steps already in TESTFLIGHT.md. The rest are nits.)
+
+Issues:
+1. Pre-flight gate (owner / console, TESTFLIGHT.md). (a)–(d) must be done before the family relies on the app, because the SOS Sent screen says `SOS sent to your family`, which is only true once pushes are live. (e)–(h) must be done before the first build and external TestFlight:
+   (a) Functions deployed (Blaze) and APNs `.p8` uploaded. Without them there are no SOS or check-in pushes, and Delete account removes only the sign-in (TESTFLIGHT.md:49).
+   (b) Rules deployed.
+   (c) Email enumeration protection OFF.
+   (d) SIWA revoke key and Team ID set in Firebase (the Stage 2 carry-forward).
+   (e) `APP_STORE_APPLE_ID` set in codemagic.yaml:39 (the build stops with a message until it is).
+   (f) `SUPPORT_EMAIL` replaced in `firebase/hosting/privacy.html` and `support.html` (2 each), hosting deployed, Privacy Policy URL entered (needed for external testing).
+   (g) Demo email account + demo family for Beta App Review.
+   (h) App Store privacy label: BACKEND §9 covers location and battery; also add Name, Email, User ID, Device ID and Other User Content, matching PrivacyInfo   [severity: gate — not code]
+2. The Welcome caption says "By continuing you agree to Terms · Privacy". There are no Terms and no links (`TODO(stage 6)`). It's fine for TestFlight. Before the App Store, 5.1.1(i) needs an in-app privacy-policy link, and claiming agreement to Terms that don't exist is misleading → FamilyMap/Features/Auth/WelcomeView.swift:103-104 → make "Privacy" a `Link` to `https://PROJECT_ID.web.app/privacy`, and drop "Terms" unless a terms page is added. Optionally add a Privacy Policy row in Settings › Privacy   [severity: nit (must before App Store)]
+3. Sign-out shows no progress. `signOut()` waits up to 5 s for the `pushTokens` delete before `Auth.signOut()`, and the dialog closes with nothing visible (the double tap is guarded) → FamilyMap/Core/State/AppState.swift:353-376; SettingsView sign-out row → publish `isSigningOut` and show a row spinner, or cut the timeout to 3 s   [severity: nit]
+4. The usage string (§6 exact) says "only when you open the app or tap Refresh". Check in and SOS also share, and both are foreground taps. It's accurate enough for review. Optionally: "…when you open the app, tap Refresh or Check in, or send an SOS…" → project.yml:44 + DESIGN-SPEC §6   [severity: nit — optional]
+5. BUILD-PLAN.md:50 still lists the 4 Stage 3.5 carry-forwards as open. Three are fixed and one is verify-on-Mac (see the carry-forward table) → tick them   [severity: nit]
+
+Checked OK:
+- PERMISSIONS:
+  - The only prompts are location (`requestWhenInUseAuthorization`, from the first share, or from the place editor's Use my location) and notifications (`requestAuthorization`, from the priming sheet or the Settings row). Grep finds 0 hits for PHPicker, PhotosPicker, UIImagePicker, PHPhotoLibrary, CNContact, AVCapture, AVAudio, EventKit, HealthKit, ATTrackingManager, LocalAuthentication, CoreMotion and Bluetooth.
+  - There's no photo upload. `AvatarView` only shows an existing `photoURL` through `AsyncImage`, which the client never writes. So the only usage string needed is `NSLocationWhenInUseUsageDescription`, and it is present. No Always string, no tracking string.
+  - Location denied or restricted: the Map shows the `.warning` banner with Open Settings, others' pins still show, and no share is attempted. The SOS sheet shows the location-off copy and sends without a location. The place editor shows its banner and the button stays enabled. Approximate location is accepted silently.
+  - Notifications: priming is offered once, only after the location prompt is answered and only while notification permission is undecided. Denied → the `Notifications are off` row → `openNotificationSettingsURLString`. The rows re-read on `.active`.
+- ERROR HANDLING:
+  - `localizedDescription` appears only in AppDelegate's `print`; everything on screen goes through `userMessage` (§9.1 strings).
+  - Every async action has a loading state and an error state:
+    - Sign in with Apple and email: button spinner + ErrorBanner.
+    - Create/join family, name save, leave family, check-in toggle: spinner + ErrorBanner.
+    - Delete account: spinner, Cancel disabled, no dismiss mid-delete.
+    - Places save/delete/search, share (capsule + banner), chat send (Sending/Failed), Load earlier, SOS (progress states + Failed + Try again).
+    - Notification request: spinner. Failures are silent, as §3.9 says.
+  - Offline: checked before every write that could queue. Location, chat, SOS, the toggle, place save/delete and search all fail fast. Location, chat, SOS and the toggle are transactions, and nothing user-visible can be replayed on a later launch (place writes still use plain `setData`/`updateData` behind the offline check plus the stable ID, as accepted in 3.6). The session loading screen times out at 8 s with Retry and Sign out.
+  - No `try!`, `as!`, `fatalError`, forced `first!`/`URL(string:)!` anywhere in FamilyMap/.
+- EMPTY / LOADING STATES:
+  - Launch: SessionLoadingView.
+  - Map, only me: `Just you` + Invite row. No locations: greyed `No location yet` rows, and the camera uses the device's location or the default.
+  - Family, just you: mascot + §9.3 copy. No places: the empty text row + Add place, with a skeleton row until the first snapshot.
+  - Chat: centred ProgressView, then the mascot empty state with the input ready.
+  - Settings is never empty; the notification rows appear once the status is read.
+  - The missing §3.3 L/X map states are in the carry-forward table.
+- ACCOUNT:
+  - Sign out: `pushTokens/{uid}` delete (online, 5 s) → `Auth.signOut()` → `deleteToken()`. Listeners are stopped, all state is cleared in `handleAuthChange(nil)`, and chat is view-owned.
+  - Delete account: Apple always re-auths, then `revokeToken`, then `delete()`. Email tries the delete first and re-auths only on `requiresRecentLogin`. `onUserDeleted` cleans Firestore and `pushTokens`, and the client deletes its FCM token. The Apple step now shows `Sign in with Apple to confirm.` / `Apple needs to confirm…` (Stage 2 final nit, fixed).
+  - Leave: one batch (`arrayRemove` + `familyId: null`); the server purges or promotes; listeners stop and `locationSync.reset()` runs.
+- RELEASE SETTINGS (project.yml):
+  - Bundle `com.skyline.pinny`, which matches codemagic `bundle_identifier` and the local plist. Display name `$(APP_DISPLAY_NAME)` = Pinny. `MARKETING_VERSION 1.0.0`, `CURRENT_PROJECT_VERSION 1`, bumped by CI to the latest TestFlight build + 1 (agvtool).
+  - iOS 16.0, iPhone only, portrait, `UILaunchScreen`, `ITSAppUsesNonExemptEncryption: false` (HTTPS only, so exempt).
+  - Entitlements: `aps-environment: development` (CI checks that the exported IPA says `production`), Sign in with Apple, time-sensitive.
+  - `UIBackgroundModes: [remote-notification]`.
+  - App icon: 1024², RGB, no alpha, single size. `PrivacyInfo.xcprivacy` is copied as a resource and has the complete data types plus UserDefaults CA92.1.
+- SECRETS (repo on GitHub, `origin` = pinny-ios):
+  - `git ls-files` has 101 files. The real `GoogleService-Info.plist` isn't tracked (`.gitignore:24`) and isn't in any commit (`git rev-list --all` + `ls-tree`). It's written in CI from the `firebase_ios` secret group.
+  - Grep of the tracked files for API-key, private-key, `sk_live`, `ghp_` and Slack token patterns finds only the `.example` placeholder. There are no `.p8`, `.p12`, `.cer`, `.mobileprovision`, `.env` or service-account files.
+  - `.firebaserc` holds only the project id, which isn't a secret. `.gitignore` covers the plist, signing files, `.env*`, `functions/lib`, `node_modules` and debug logs.
+
+Carry-forward nits, all stages (fixed / accepted / open):
+| Stage · item | Status |
+|---|---|
+| 1·1 location `updatedAt` server stamp | fixed (Stage 3) |
+| 1·2 project.yml machine-parse | open — first Codemagic `xcodegen generate` |
+| 2 first pass #1–#12 | fixed (Stage 2 re-review/final) |
+| 2 #6 segmented Picker vs link toggle (§9.2) | accepted |
+| 2 re #2 enumeration protection doc · #3 reset toast · #4 purge sweep · #5 localizedDescription in Chat/SOS | fixed |
+| 2 re #10 SIWA revoke key configured | open — console (item 1d) |
+| 2 final #1 Apple re-auth banner copy | fixed |
+| 3 #1–#8 | fixed (3.5 re-review) · #9 moot (§11) |
+| 3 #10 (a) stale-pin z-order (b) "Publishing changes" log (c) first fit on a cache-only snapshot | open — verify on device |
+| 3.5 #1–#3, #4 `acc` int, #5 (a)(b)(d)(e), #6 (a)(b) | fixed |
+| 3.5 #5(c) empty-map tap deselects | accepted (§11.4 amended) |
+| 3.5 #6(c) Family-tab row tap (§3.6), map "Family map" label (§7), Map L-state ProgressView + X-state `Can't reach Pinny` banner (§3.3), Family members skeleton / `Couldn't load family` (§3.6) | open — polish nits |
+| 3.5 #7 (a) Legal link in full (b) `safeAreaInsets.top` (c) offline transaction timing (d) `battery.50/.75` on 16.0 (e) drawer drag vs row taps (f) z-order | open — verify on device |
+| 3/3.5 final #1 pin re-tap deselects · #2 lift before guard · #3 `geocodeFoundNoResult` | fixed (Stage 3.6) |
+| 3.6 #1–#7, #8 (a)(b)(c) | fixed |
+| 3.6 #9 (a) pin over place tile (b) Cancel with no change (c) `mappin` tip (e) VoiceOver slider/order · (d) moot (search on Return only) | open — verify on device |
+| 4+5 #1–#9 | fixed (re-review above) · #5 accepted (documented) |
+| 4+5 #10 (a)–(g) concurrency warnings, `accessibilityActions` on 16.0, hold cancel paths, SE detent fit, `tel://000`, cold-start SOS routing + Time Sensitive, Load earlier scroll | open — verify on device |
+| Photo row in §3.7 wireframe (Assumption 4) | accepted — initials only; no photo permission needed |
+| BACKEND §9 `clearPersistence()` on sign-out/delete (on-device family cache) | accepted for TestFlight — disclosed in privacy.html ("keeps a copy … until newer ones replace them or you delete the app"); hardening for a later release |

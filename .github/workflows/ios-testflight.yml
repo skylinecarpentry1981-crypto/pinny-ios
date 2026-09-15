@@ -1,0 +1,350 @@
+# Builds Pinny (Xcode target "FamilyMap") on a GitHub-hosted Mac and uploads
+# it to App Store Connect / TestFlight. Path A in docs/TESTFLIGHT.md.
+# codemagic.yaml stays as the alternative (Path B).
+#
+#   gh workflow run ios-testflight.yml -R skylinecarpentry1981-crypto/pinny-ios
+#   gh workflow run ios-testflight.yml -R skylinecarpentry1981-crypto/pinny-ios -f upload=false
+#   gh run list -R skylinecarpentry1981-crypto/pinny-ios --workflow ios-testflight.yml --limit 1
+#   gh run view <run-id> -R skylinecarpentry1981-crypto/pinny-ios --log-failed
+#
+# Signing: automatic. The archive is signed for development (Xcode creates a
+# throwaway development certificate on the runner; the last step revokes it),
+# then -exportArchive re-signs it with Apple's cloud-managed distribution
+# certificate. Cloud signing needs an API key with the Admin role; with a
+# weaker key the export fails with "Cloud signing permission error", and the
+# "Explain the failure" step says so.
+#
+# Checked against:
+#   https://github.com/actions/runner-images (macos-26 image, Xcode 26.x list)
+#   https://developer.apple.com/news/upcoming-requirements/ (uploads need Xcode 26+ since 2026-04-28)
+#   https://keith.github.io/xcode-man-pages/xcodebuild.1.html and `xcodebuild -help`
+#   https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
+
+name: iOS TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: "Upload to App Store Connect (untick: archive, export and checks only)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# One build at a time; a second request waits instead of cancelling the first.
+concurrency:
+  group: ios-testflight
+  cancel-in-progress: false
+
+env:
+  XCODE_MAJOR: "26"
+  PROJECT: FamilyMap.xcodeproj
+  SCHEME: FamilyMap
+  TEAM_ID: X86UHCK734
+  # Build number = GitHub run number + this offset, so it stays above any
+  # manual or Codemagic upload. Raise it if App Store Connect says the build
+  # number was already used.
+  BUILD_NUMBER_OFFSET: "100"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+
+defaults:
+  run:
+    # Explicit bash = `bash --noprofile --norc -eo pipefail {0}`.
+    shell: bash
+
+jobs:
+  build:
+    name: Archive, sign, upload
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      BUILD_DIR: ${{ github.workspace }}/build
+      SPM_DIR: ${{ github.workspace }}/build/SourcePackages
+      LOG_DIR: ${{ github.workspace }}/build/logs
+      ARCHIVE_PATH: ${{ github.workspace }}/build/FamilyMap.xcarchive
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check secrets are set
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          GOOGLE_SERVICE_INFO_PLIST_B64: ${{ secrets.GOOGLE_SERVICE_INFO_PLIST_B64 }}
+        run: |
+          missing=""
+          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 GOOGLE_SERVICE_INFO_PLIST_B64; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing GitHub secret(s):$missing. See docs/TESTFLIGHT.md, Path A step 1."
+            exit 1
+          fi
+          echo "All four secrets are set."
+
+      - name: Select newest stable Xcode ${{ env.XCODE_MAJOR }}.x
+        run: |
+          XCODE_APP=$(ls -d /Applications/Xcode_"$XCODE_MAJOR"*.app 2>/dev/null \
+            | grep -E "/Xcode_${XCODE_MAJOR}(\.[0-9]+)*\.app$" | sort -V | tail -n 1 || true)
+          if [ -z "$XCODE_APP" ]; then
+            echo "::error::No stable Xcode $XCODE_MAJOR.x on this runner. Installed:"
+            ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install XcodeGen (and xcbeautify if missing)
+        run: |
+          brew install xcodegen
+          if ! command -v xcbeautify >/dev/null; then
+            brew install xcbeautify || echo "::warning::xcbeautify not available; showing raw xcodebuild output."
+          fi
+          xcodegen --version
+
+      - name: Write GoogleService-Info.plist from secret
+        env:
+          GOOGLE_SERVICE_INFO_PLIST_B64: ${{ secrets.GOOGLE_SERVICE_INFO_PLIST_B64 }}
+        run: |
+          PLIST=FamilyMap/Resources/GoogleService-Info.plist
+          printf '%s' "$GOOGLE_SERVICE_INFO_PLIST_B64" | tr -d ' \r\n' | base64 --decode > "$PLIST"
+          plutil -lint "$PLIST"
+          PLIST_BUNDLE=$(/usr/libexec/PlistBuddy -c "Print :BUNDLE_ID" "$PLIST" 2>/dev/null || echo "(missing)")
+          if [ "$PLIST_BUNDLE" != "com.skyline.pinny" ]; then
+            echo "::error::GoogleService-Info.plist is for bundle ID '$PLIST_BUNDLE', expected com.skyline.pinny. Download the plist of the Pinny iOS app in Firebase."
+            exit 1
+          fi
+
+      - name: Write App Store Connect API key
+        id: apikey
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          KEY_DIR="$RUNNER_TEMP/private_keys"
+          mkdir -p "$KEY_DIR"
+          KEY_PATH="$KEY_DIR/AuthKey_${ASC_KEY_ID}.p8"
+          printf '%s\n' "$ASC_KEY_P8" | tr -d '\r' > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          if ! grep -q "BEGIN PRIVATE KEY" "$KEY_PATH"; then
+            echo "::error::ASC_KEY_P8 is not the text of a .p8 file (no 'BEGIN PRIVATE KEY' line)."
+            exit 1
+          fi
+          echo "ASC_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Generate Xcode project (XcodeGen)
+        run: xcodegen generate
+
+      - name: Cache Swift packages
+        uses: actions/cache@v6
+        with:
+          path: build/SourcePackages
+          key: spm-${{ runner.os }}-xcode${{ env.XCODE_MAJOR }}-${{ hashFiles('project.yml') }}
+          restore-keys: |
+            spm-${{ runner.os }}-xcode${{ env.XCODE_MAJOR }}-
+
+      - name: Resolve Swift packages
+        run: |
+          set -o pipefail
+          mkdir -p "$LOG_DIR"
+          xcodebuild -resolvePackageDependencies \
+            -project "$PROJECT" -scheme "$SCHEME" \
+            -clonedSourcePackagesDirPath "$SPM_DIR" \
+            2>&1 | tee "$LOG_DIR/resolve.log"
+
+      - name: Archive (Release, generic iOS device)
+        run: |
+          set -o pipefail
+          BUILD_NUMBER=$((GITHUB_RUN_NUMBER + BUILD_NUMBER_OFFSET))
+          echo "Build number: $BUILD_NUMBER"
+          beautify() { if command -v xcbeautify >/dev/null; then xcbeautify --renderer github-actions; else cat; fi; }
+          # Raw log goes to a file first (verbatim errors + artifact), then xcbeautify.
+          xcodebuild archive \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$ARCHIVE_PATH" \
+            -clonedSourcePackagesDirPath "$SPM_DIR" \
+            -resultBundlePath "$LOG_DIR/archive.xcresult" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            2>&1 | tee "$LOG_DIR/archive.log" | beautify
+
+      - name: Export IPA (App Store Connect signing)
+        run: |
+          set -o pipefail
+          write_export_options() {  # $1 = export | upload, $2 = output plist
+            cat > "$2" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>$1</string>
+            <key>teamID</key><string>$TEAM_ID</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>uploadSymbols</key><true/>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict>
+          </plist>
+          EOF
+            plutil -lint "$2"
+          }
+          write_export_options export "$BUILD_DIR/ExportOptions-export.plist"
+          write_export_options upload "$BUILD_DIR/ExportOptions-upload.plist"
+          beautify() { if command -v xcbeautify >/dev/null; then xcbeautify --renderer github-actions; else cat; fi; }
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportPath "$BUILD_DIR/export" \
+            -exportOptionsPlist "$BUILD_DIR/ExportOptions-export.plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            2>&1 | tee "$LOG_DIR/export.log" | beautify
+
+      - name: Check push entitlement is production
+        # project.yml keeps aps-environment = development (Debug signing needs
+        # it), so the archive itself says "development". The App Store export
+        # must re-sign it to "production" or TestFlight builds get no pushes.
+        # The upload step re-runs the same export with destination=upload.
+        run: |
+          IPA=$(ls "$BUILD_DIR"/export/*.ipa 2>/dev/null | head -n 1 || true)
+          if [ -z "$IPA" ]; then
+            echo "::error::No .ipa in build/export."
+            ls -la "$BUILD_DIR/export" || true
+            exit 1
+          fi
+          rm -rf "$RUNNER_TEMP/ipa" && mkdir -p "$RUNNER_TEMP/ipa"
+          unzip -q "$IPA" -d "$RUNNER_TEMP/ipa"
+          APP=$(ls -d "$RUNNER_TEMP"/ipa/Payload/*.app | head -n 1)
+          ENT="$RUNNER_TEMP/entitlements.plist"
+          codesign -d --entitlements - --xml "$APP" > "$ENT" 2>/dev/null || true
+          if ! plutil -lint "$ENT" >/dev/null 2>&1; then
+            # Older codesign syntax (what codemagic.yaml uses).
+            codesign -d --entitlements :- "$APP" > "$ENT" 2>/dev/null || true
+          fi
+          if ! plutil -lint "$ENT" >/dev/null 2>&1; then
+            echo "::error::Could not read the entitlements of the exported app."
+            exit 1
+          fi
+          pb() { /usr/libexec/PlistBuddy -c "Print :$1" "$2" 2>/dev/null || echo "(missing)"; }
+          APS=$(pb aps-environment "$ENT")
+          VERSION=$(pb CFBundleShortVersionString "$APP/Info.plist")
+          BUILD=$(pb CFBundleVersion "$APP/Info.plist")
+          echo "Version $VERSION ($BUILD)"
+          echo "aps-environment = $APS"
+          echo "Sign in with Apple = $(pb com.apple.developer.applesignin "$ENT" | tr -s ' \n' ' ')"
+          echo "time-sensitive = $(pb com.apple.developer.usernotifications.time-sensitive "$ENT")"
+          {
+            echo "### Pinny $VERSION ($BUILD)"
+            echo ""
+            echo "| Check | Result |"
+            echo "|---|---|"
+            echo "| aps-environment | $APS |"
+            echo "| Upload requested | ${{ inputs.upload }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$APS" != "production" ]; then
+            echo "::error::aps-environment is '$APS', expected 'production'. Run the asc-setup workflow (Push Notifications must be on for com.skyline.pinny), then build again."
+            exit 1
+          fi
+
+      - name: Upload to App Store Connect
+        if: ${{ inputs.upload }}
+        run: |
+          set -o pipefail
+          beautify() { if command -v xcbeautify >/dev/null; then xcbeautify --renderer github-actions; else cat; fi; }
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportPath "$BUILD_DIR/upload" \
+            -exportOptionsPlist "$BUILD_DIR/ExportOptions-upload.plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            2>&1 | tee "$LOG_DIR/upload.log" | beautify
+          echo "Uploaded build $((GITHUB_RUN_NUMBER + BUILD_NUMBER_OFFSET)). It shows in TestFlight after Apple finishes processing it."
+          echo "| Uploaded | build $((GITHUB_RUN_NUMBER + BUILD_NUMBER_OFFSET)), waiting for Apple processing |" >> "$GITHUB_STEP_SUMMARY"
+
+      # Fails on purpose so this output is included in `gh run view --log-failed`.
+      - name: Explain the failure
+        if: failure()
+        run: |
+          if ! ls "$LOG_DIR"/*.log >/dev/null 2>&1; then
+            echo "No xcodebuild logs: the job failed before xcodebuild ran. See the failed step above."
+            exit 0
+          fi
+          echo "---- error lines from the raw xcodebuild logs (verbatim) ----"
+          grep -h -E "error:|\*\* [A-Z ]+ FAILED \*\*|Error Domain=" "$LOG_DIR"/*.log | awk '!seen[$0]++' | head -n 200 || true
+          echo "-------------------------------------------------------------"
+          found() { grep -q -h -E "$1" "$LOG_DIR"/*.log; }
+          if found "Cloud signing permission error|access to cloud-managed distribution certificates"; then
+            echo "::error title=API key needs the Admin role::App Store export uses cloud signing, which needs an App Store Connect team key with the Admin role. Create a new Admin team key and replace the ASC_KEY_ID and ASC_KEY_P8 secrets (the issuer ID stays the same). docs/TESTFLIGHT.md, Path A troubleshooting."
+          fi
+          if found "has no devices from which to generate a provisioning profile"; then
+            echo "::error title=No registered device::The team needs at least one registered iPhone for the development-signed archive. docs/TESTFLIGHT.md, Path A, sequence item 2."
+          fi
+          if found "private key is not installed in your keychain"; then
+            echo "::error title=Orphaned CI certificate::An earlier runner's development certificate is still active. In developer.apple.com > Certificates, revoke the Apple Development certificates named 'Created via API', then build again."
+          fi
+          if found "No profiles for|doesn't support the .* capabilit|doesn't include the .* entitlement"; then
+            echo "::error title=Capabilities::Signing profile and entitlements don't match. Run the asc-setup workflow (it enables Push, Sign in with Apple, Time Sensitive) and build again."
+          fi
+          if found "No suitable application records were found"; then
+            echo "::error title=App record missing::Create the app in App Store Connect (name Pinny Family Map, bundle ID com.skyline.pinny, SKU pinny-ios-1), then build again."
+          fi
+          if found "bundle version must be higher|has already been used|Redundant Binary Upload"; then
+            echo "::error title=Build number used::Raise BUILD_NUMBER_OFFSET in .github/workflows/ios-testflight.yml above the highest build in TestFlight."
+          fi
+          if found "NOT_AUTHORIZED|Authentication credentials are missing or invalid"; then
+            echo "::error title=API key rejected::Check the ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_P8 secrets belong to the same active team key."
+          fi
+          exit 1
+
+      - name: Collect logs (key IDs redacted)
+        if: failure()
+        run: |
+          mkdir -p "$LOG_DIR/distribution"
+          # -exportArchive writes its own logs to $TMPDIR/*.xcdistributionlogs.
+          for d in "${TMPDIR:-/tmp}"/*.xcdistributionlogs; do
+            if [ -d "$d" ]; then cp -R "$d" "$LOG_DIR/distribution/"; fi
+          done
+          find "$LOG_DIR/distribution" -name '*verbose*' -delete || true
+          # xcodebuild echoes its command line, which includes the key ID and issuer ID.
+          for v in "$ASC_KEY_ID" "$ASC_ISSUER_ID"; do
+            [ -n "$v" ] && find "$LOG_DIR" -type f \( -name '*.log' -o -name '*.txt' -o -name '*.plist' \) \
+              -exec sed -i '' -e "s/$v/[redacted]/g" {} + || true
+          done
+
+      - name: Upload logs artifact
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xcodebuild-logs-run-${{ github.run_number }}
+          path: build/logs
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # Clean-up: revoke the development certificate this runner created (its
+      # private key disappears with the runner). Only certificates whose
+      # identity is in this runner's keychain are touched.
+      - uses: actions/setup-python@v7
+        if: ${{ always() && steps.apikey.outcome == 'success' }}
+        with:
+          python-version: "3.13"
+
+      - name: Revoke this runner's throwaway development certificate
+        if: ${{ always() && steps.apikey.outcome == 'success' }}
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          python -m pip install --disable-pip-version-check --quiet "PyJWT>=2.8,<3" "cryptography>=42" "requests>=2.31,<3"
+          python scripts/asc_setup.py revoke-runner-certs

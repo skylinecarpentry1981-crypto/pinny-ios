@@ -1,0 +1,84 @@
+name: FamilyMap
+
+options:
+  bundleIdPrefix: com.skyline
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "15.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+packages:
+  Firebase:
+    url: https://github.com/firebase/firebase-ios-sdk
+    from: 11.0.0
+
+targets:
+  FamilyMap:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    # Generates a shared "FamilyMap" scheme (xcshareddata) so CI can run
+    # `xcodebuild -scheme FamilyMap`. Without this XcodeGen writes no scheme.
+    scheme: {}
+    sources:
+      - path: FamilyMap
+        excludes:
+          - "Resources/Info.plist"
+          - "Resources/FamilyMap.entitlements"
+          - "Resources/GoogleService-Info.plist.example"
+          - "Resources/PrivacyInfo.xcprivacy"
+      # App privacy manifest -> Copy Bundle Resources (explicit, not guessed).
+      - path: FamilyMap/Resources/PrivacyInfo.xcprivacy
+        buildPhase: resources
+    info:
+      path: FamilyMap/Resources/Info.plist
+      properties:
+        # Home-screen name comes from APP_DISPLAY_NAME (settings below).
+        CFBundleDisplayName: "$(APP_DISPLAY_NAME)"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSLocationWhenInUseUsageDescription: "$(APP_DISPLAY_NAME) shares your location with your family only when you open the app or tap Refresh. It never tracks you in the background."
+        UIBackgroundModes:
+          - remote-notification
+        ITSAppUsesNonExemptEncryption: false
+    entitlements:
+      path: FamilyMap/Resources/FamilyMap.entitlements
+      properties:
+        # Keep "development". Debug runs use a development profile, which only
+        # allows development. Archive + export for App Store / TestFlight
+        # re-signs with the distribution profile, whose value is
+        # "production" (ios-testflight.yml and codemagic.yaml check the final IPA). Hardcoding
+        # "production" would break local Debug signing.
+        aps-environment: development
+        com.apple.developer.applesignin:
+          - Default
+        com.apple.developer.usernotifications.time-sensitive: true
+    settings:
+      base:
+        # User-facing app name (home screen, permission prompt). Rename here
+        # only; PRODUCT_NAME / target / scheme / folder stay "FamilyMap" (internal).
+        APP_DISPLAY_NAME: Pinny
+        PRODUCT_BUNDLE_IDENTIFIER: com.skyline.pinny
+        PRODUCT_NAME: FamilyMap
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1"
+        DEVELOPMENT_TEAM: X86UHCK734
+        CODE_SIGN_STYLE: Automatic
+        OTHER_LDFLAGS: -ObjC
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        # Lets `agvtool new-version` (CI build number bump) manage CURRENT_PROJECT_VERSION.
+        VERSIONING_SYSTEM: apple-generic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    dependencies:
+      - package: Firebase
+        product: FirebaseAuth
+      - package: Firebase
+        product: FirebaseFirestore
+      - package: Firebase
+        product: FirebaseMessaging

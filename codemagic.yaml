@@ -1,0 +1,116 @@
+# Codemagic CI: builds the iOS app (Pinny; Xcode target "FamilyMap") on a
+# cloud Mac and uploads it to TestFlight.
+# Works from Windows. Start it by hand in the Codemagic web UI (there is no
+# `triggering:` block, so pushes do not start builds or use build minutes).
+# One-time setup: docs/TESTFLIGHT.md (section 0 for the fast path, then C).
+#
+# Two workflows, same build (shared via YAML anchors):
+#   ios-internal   - upload only; internal testers get it after processing, no review.
+#   ios-testflight - upload + Beta App Review + external "Family" group.
+#
+# Keys checked against:
+#   https://docs.codemagic.io/yaml-quick-start/building-a-native-ios-app/
+#   https://docs.codemagic.io/yaml-code-signing/signing-ios/
+#   https://docs.codemagic.io/yaml-publishing/app-store-connect/
+#   https://docs.codemagic.io/knowledge-codemagic/build-versioning/
+#   https://docs.codemagic.io/yaml-basic-configuration/configuring-environment-variables/
+#   https://docs.codemagic.io/yaml-basic-configuration/yaml-getting-started/ (anchors and aliases)
+
+workflows:
+  ios-testflight:
+    name: iOS TestFlight
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    integrations: &ios_integrations
+      # Name given to the App Store Connect API key in Codemagic:
+      # Team settings > Team integrations > Developer Portal > Manage keys.
+      app_store_connect: asc_api_key
+    environment: &ios_environment
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.skyline.pinny
+      groups:
+        # Env group holding GOOGLE_SERVICE_INFO_PLIST (base64 of the Firebase plist), marked Secret.
+        - firebase_ios
+      vars:
+        XCODE_PROJECT: "FamilyMap.xcodeproj"
+        XCODE_SCHEME: "FamilyMap"
+        # REPLACE: App Store Connect > your app > App Information > Apple ID (numeric).
+        APP_STORE_APPLE_ID: 0000000000
+      xcode: latest
+    scripts: &ios_scripts
+      - name: Write GoogleService-Info.plist from secret
+        script: |
+          set -e
+          PLIST="$CM_BUILD_DIR/FamilyMap/Resources/GoogleService-Info.plist"
+          echo "$GOOGLE_SERVICE_INFO_PLIST" | base64 --decode > "$PLIST"
+          plutil -lint "$PLIST"
+      - name: Generate Xcode project (XcodeGen)
+        script: |
+          set -e
+          brew install xcodegen
+          cd "$CM_BUILD_DIR"
+          xcodegen generate
+      - name: Set up provisioning profiles on the Xcode project
+        script: xcode-project use-profiles
+      - name: Increment build number (latest TestFlight build + 1)
+        script: |
+          set -e
+          cd "$CM_BUILD_DIR"
+          if [ "$APP_STORE_APPLE_ID" = "0000000000" ]; then
+            echo "Set APP_STORE_APPLE_ID in codemagic.yaml first (see docs/TESTFLIGHT.md)."
+            exit 1
+          fi
+          # Falls back to 0 when the app has no TestFlight build yet (first upload).
+          LATEST=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APPLE_ID" || echo 0)
+          agvtool new-version -all $((LATEST + 1))
+      - name: Build ipa for distribution
+        script: |
+          xcode-project build-ipa \
+            --project "$CM_BUILD_DIR/$XCODE_PROJECT" \
+            --scheme "$XCODE_SCHEME"
+      - name: Check push entitlement is production
+        # project.yml keeps aps-environment = development; App Store export
+        # must re-sign it to production or TestFlight builds get no pushes.
+        script: |
+          set -e
+          cd "$CM_BUILD_DIR"
+          IPA=$(ls build/ios/ipa/*.ipa | head -n 1)
+          rm -rf /tmp/ipa && mkdir -p /tmp/ipa
+          unzip -q "$IPA" -d /tmp/ipa
+          codesign -d --entitlements :- /tmp/ipa/Payload/*.app > /tmp/entitlements.plist 2>/dev/null
+          APS=$(/usr/libexec/PlistBuddy -c "Print :aps-environment" /tmp/entitlements.plist)
+          echo "aps-environment = $APS"
+          if [ "$APS" != "production" ]; then
+            echo "Expected production. Check Push Notifications is enabled on the App ID and re-fetch the profile."
+            exit 1
+          fi
+    artifacts: &ios_artifacts
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.dSYM
+    publishing:
+      app_store_connect:
+        auth: integration
+        # Sends the build to Beta App Review, needed for external testers.
+        submit_to_testflight: true
+        # External TestFlight group; create it in App Store Connect first.
+        beta_groups:
+          - Family
+
+  # Fast path (docs/TESTFLIGHT.md section 0): same build, upload only.
+  # No Beta App Review and no external group; the build shows up for
+  # internal testers (App Store Connect users) once Apple finishes processing.
+  ios-internal:
+    name: iOS internal (no review)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    integrations: *ios_integrations
+    environment: *ios_environment
+    scripts: *ios_scripts
+    artifacts: *ios_artifacts
+    publishing:
+      app_store_connect:
+        auth: integration
+        # Upload only (the default is false; stated for clarity).
+        submit_to_testflight: false
