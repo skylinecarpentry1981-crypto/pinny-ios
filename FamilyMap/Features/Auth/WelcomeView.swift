@@ -1,12 +1,17 @@
 import SwiftUI
+import UIKit
 import AuthenticationServices
 
 @MainActor
 final class WelcomeViewModel: ObservableObject {
     @Published var errorMessage: String?
-    @Published var isBusy = false
+    @Published var isAppleBusy = false
+    @Published var isGoogleBusy = false
 
     private var currentNonce: String?
+
+    /// Either sign-in in flight: both buttons and the email link are disabled.
+    var isSigningIn: Bool { isAppleBusy || isGoogleBusy }
 
     /// Called from `SignInWithAppleButton.onRequest`: fresh nonce, SHA256 to Apple, raw kept for Firebase.
     func prepare(_ request: ASAuthorizationAppleIDRequest) {
@@ -24,10 +29,10 @@ final class WelcomeViewModel: ObservableObject {
                 return
             }
             currentNonce = nil
-            isBusy = true
+            isAppleBusy = true
             errorMessage = nil
             Task {
-                defer { isBusy = false }
+                defer { isAppleBusy = false }
                 do {
                     try await authService.signInWithApple(authorization: authorization, rawNonce: rawNonce)
                 } catch {
@@ -39,6 +44,26 @@ final class WelcomeViewModel: ObservableObject {
                 return
             }
             errorMessage = AuthError.appleFailed.userMessage
+        }
+    }
+
+    func signInWithGoogle(authService: AuthService) {
+        guard !isSigningIn else { return }
+        guard let viewController = UIApplication.shared.topViewController else {
+            errorMessage = AuthError.googleFailed.userMessage
+            return
+        }
+        isGoogleBusy = true
+        errorMessage = nil
+        Task {
+            defer { isGoogleBusy = false }
+            do {
+                try await authService.signInWithGoogle(presenting: viewController)
+            } catch {
+                // Closing the Google sheet shows nothing (§9.1).
+                if (error as? AuthError) == .canceled { return }
+                errorMessage = error.userMessage
+            }
         }
     }
 }
@@ -76,20 +101,30 @@ struct WelcomeView: View {
 
                 Spacer()
 
-                ZStack {
-                    SignInWithAppleButton(.signIn) { request in
-                        viewModel.prepare(request)
-                    } onCompletion: { result in
-                        viewModel.handleAppleSignIn(result, authService: appState.authService)
-                    }
-                    .signInWithAppleButtonStyle(colorScheme == .dark ? .white : .black)
-                    .frame(height: FMSize.buttonHeight)
-                    .opacity(viewModel.isBusy ? 0.4 : 1)
-                    .disabled(viewModel.isBusy)
+                // Apple and Google: equal prominence, same 50 pt height and corner radius.
+                VStack(spacing: FMSpacing.md) {
+                    ZStack {
+                        SignInWithAppleButton(.signIn) { request in
+                            viewModel.prepare(request)
+                        } onCompletion: { result in
+                            viewModel.handleAppleSignIn(result, authService: appState.authService)
+                        }
+                        .signInWithAppleButtonStyle(colorScheme == .dark ? .white : .black)
+                        .frame(height: FMSize.buttonHeight)
+                        .cornerRadius(FMRadius.card)
+                        .opacity(viewModel.isSigningIn ? 0.4 : 1)
+                        .disabled(viewModel.isSigningIn)
 
-                    if viewModel.isBusy {
-                        ProgressView()
+                        if viewModel.isAppleBusy {
+                            ProgressView()
+                        }
                     }
+
+                    ContinueWithGoogleButton(isLoading: viewModel.isGoogleBusy) {
+                        viewModel.signInWithGoogle(authService: appState.authService)
+                    }
+                    .opacity(viewModel.isAppleBusy ? 0.4 : 1)
+                    .disabled(viewModel.isSigningIn)
                 }
 
                 NavigationLink("Use email instead") {
@@ -98,7 +133,7 @@ struct WelcomeView: View {
                 .font(.footnote)
                 .foregroundColor(Color.fm.textSecondary)
                 .frame(minHeight: FMSize.minTapTarget)
-                .disabled(viewModel.isBusy)
+                .disabled(viewModel.isSigningIn)
 
                 // TODO(stage 6): link Terms and Privacy to their hosted URLs.
                 Text("By continuing you agree to Terms · Privacy")

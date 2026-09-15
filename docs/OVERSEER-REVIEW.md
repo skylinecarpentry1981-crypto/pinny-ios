@@ -633,3 +633,55 @@ Carry-forward nits, all stages (fixed / accepted / open):
 | 4+5 #10 (a)–(g) concurrency warnings, `accessibilityActions` on 16.0, hold cancel paths, SE detent fit, `tel://000`, cold-start SOS routing + Time Sensitive, Load earlier scroll | open — verify on device |
 | Photo row in §3.7 wireframe (Assumption 4) | accepted — initials only; no photo permission needed |
 | BACKEND §9 `clearPersistence()` on sign-out/delete (on-device family cache) | accepted for TestFlight — disclosed in privacy.html ("keeps a copy … until newer ones replace them or you delete the app"); hardening for a later release |
+
+
+================================================================================
+OVERSEER REVIEW — Google Sign-In (uncommitted diff)
+Result: PASS
+(I checked this by reading only; nothing was compiled. I found nothing that would fail the build, crash a CI-built app or break sign-in. SPM resolves: GoogleSignIn 9.2.0 and Firebase 11.x overlap on every package they share. Item 1 is a console step to do before the next CI run, which is designed to stop until it's done. Items 2–6 are nits.)
+
+Issues:
+1. Pre-flight (owner, console). The local `GoogleService-Info.plist` has no `CLIENT_ID` / `REVERSED_CLIENT_ID`. If the `GOOGLE_SERVICE_INFO_PLIST_B64` secret is the same file, the next run stops at the new check (that's what it's for). To fix it:
+   - Firebase → Authentication → Sign-in method → Google → Enable, and set the support email.
+   - Download the plist again and update `GOOGLE_SERVICE_INFO_PLIST_B64` (and the Codemagic `firebase_ios` group).
+   - Give the OAuth consent screen the app name so the Google sheet says Pinny.
+   → .github/workflows/ios-testflight.yml:122-126 → no code change   [severity: info — the next build stops until this is done]
+2. Codemagic (Path B) and local Xcode builds keep the `com.googleusercontent.apps.REPLACE_ME` scheme. Tapping Continue with Google then raises `NSInvalidArgumentException` "missing support for the following URL schemes" (GoogleSignIn 9.2.0 GIDSignIn.m:737-741), so the app crashes. It's latent: codemagic.yaml stops at the `APP_STORE_APPLE_ID` guard today. → codemagic.yaml:42-47 (project.yml:89) → after writing the plist, `REV=$(/usr/libexec/PlistBuddy -c "Print :REVERSED_CLIENT_ID" "$PLIST")`, then `sed -i '' "s/com.googleusercontent.apps.REPLACE_ME/$REV/" project.yml` before `xcodegen generate`   [severity: minor — latent crash, Path B only]
+3. The comment "10.0.0 needs Xcode 27" doesn't match the 10.0.0 CHANGELOG. 10.0.0 moves to AppAuth 3 / GTMAppAuth 6, raises the minimum to iOS 15 and widens gtm-session-fetcher to 4.x/5.x. It doesn't need Xcode 27. Staying on 9.x is still right. → project.yml:15 → "10.0.0 moves to AppAuth 3 / GTMAppAuth 6; stay on 9.x until tested"   [severity: nit]
+4. Branding: the plain blue "G" text isn't Google's logo. That's fine for TestFlight. Before the App Store, use the official four-colour G asset from Google's Sign-In branding page, at about 18–20 pt. The white fill, `#747775` border and `#1F1F1F` label already match Google's light theme. → FamilyMap/DesignSystem/Components/ContinueWithGoogleButton.swift:20-23   [severity: nit — before App Store]
+5. `UIApplication.shared.topViewController` is used in files that import only SwiftUI. It compiles, because SwiftUI re-exports UIKit (WelcomeView already uses `Color(uiColor:)`). But the other Features files import UIKit explicitly. → FamilyMap/Features/Auth/WelcomeView.swift:1-2, FamilyMap/Features/Settings/DeleteAccountFlow.swift:1-2 → add `import UIKit`   [severity: nit]
+6. The privacy policy still says account data comes "from email sign-in, or from Sign in with Apple". → firebase/hosting/privacy.html:35 (and :57) → add Google sign-in (Google provides the name and email)   [severity: nit — before external testers]
+
+Checked OK:
+- SPM (Package.swift files read online):
+  - GoogleSignIn 9.2.0 needs AppAuth ≥2.1.0 <3, app-check ≥11.0.0 <12, GTMAppAuth ≥5 <6 and gtm-session-fetcher ≥3.3.0 <4. GoogleUtilities and ocmock are test-only, so they're pruned.
+  - Firebase 11.0–11.15 needs app-check 11.0.1..<12, gtm-session-fetcher 3.4.1..<4 (up to ..<5 in 11.15) and GoogleUtilities 8.x.
+  - GTMAppAuth 5.0.0 needs gtm 3.3..<4 and AppAuth 2.x. app-check 11.x needs GoogleUtilities 8.x and promises 2.4.x.
+  - So it resolves to gtm-session-fetcher 3.5.x and app-check 11.x. `from: 9.2.0` caps below 10.0.0.
+  - Only the ObjC `GoogleSignIn` product is linked. The Swift 6-mode `GoogleSignInSwift` target isn't built.
+- XcodeGen:
+  - The `packages:` entry and the `- package: GoogleSignIn / product: GoogleSignIn` dependency are valid.
+  - `CFBundleURLTypes` is an array of dicts. `$(GOOGLE_REVERSED_CLIENT_ID)` is expanded in Info.plist at build time. The base placeholder keeps `xcodegen generate` working anywhere.
+- Workflow:
+  - `REVERSED_CLIENT_ID` comes from the same plist the app reads `CLIENT_ID` from at runtime, so the URL scheme and client ID can't drift.
+  - The `|| true` is safe under `-eo pipefail`. `GITHUB_ENV` carries the value to the archive step, and the command-line setting overrides the base.
+  - Export and upload re-sign the archive's already-expanded Info.plist, so they don't need the value.
+  - It isn't a secret (it ships in Info.plist), so it's correctly not masked and printing it is fine.
+- API names match the 9.2.0 headers and Firebase 11:
+  - GoogleSignIn: async `signIn(withPresenting:)`, `user.idToken?` (nullable) and `accessToken` (non-null) `.tokenString`, `profile?.name` (non-null), `GIDSignInError.Code.canceled` (-5), `GIDConfiguration(clientID:)`, settable `configuration`, `handle(_:)`, `signOut()`. `GIDSignIn` isn't `NS_SWIFT_UI_ACTOR`, so the sync `signOut()` call is fine.
+  - Firebase: `options.clientID` (String?), `GoogleAuthProvider.credential(withIDToken:accessToken:)`, `AuthErrorCode.accountExistsWithDifferentCredential`.
+- Concurrency: the `@MainActor` protocol requirement is met by the `@MainActor` implementation, and the callers are `@MainActor` view models. The nonisolated `deleteAccount` awaits the `@MainActor` `googleCredential`, which gives at most Swift 5-mode warnings. `FirebaseAuthService` is the only conformer.
+- Switches: every switch over `AuthError`, `AuthProvider` and `DeleteAccountViewModel.Step` handles `.google` / `.reauthGoogle` / `.googleFailed` / `.canceled`. No other switches exist.
+- Name seeding: `pendingDisplayName` is set before `signIn(with:)`, as for Apple. `seedName()` trims it and clamps it to 40 UTF-16 units, then it goes into `AppUser` → `createUser` with the same keys, so `validUser` is unchanged. It's cleared on failure, sign-out and delete.
+- Sign-out and delete also call `GIDSignIn.signOut()`. No revoke is needed (that's Apple-only).
+- Delete flow:
+  - Google tries `delete()` first and moves to `.reauthGoogle` only on `requiresRecentLogin` from confirm2.
+  - Re-auth runs Google, then reauthenticates, then deletes. A wrong account or rejected credential gives `googleFailed`, offline gives the offline string, and cancel is silent and stays on the step.
+  - `topViewController` walks the presented chain, so the Google sheet presents over the delete sheet.
+- Cancel is silent on Welcome and in the delete flow. The strings match §9.1 exactly. With no client ID, the user gets the `googleFailed` banner, not a crash.
+- Welcome: double taps are guarded. Both buttons and the email link are disabled while either sign-in runs. 50 pt height, 12 pt gap, `FMRadius.card` = PrimaryButton (§3.1).
+- Store rules:
+  - 4.8: Sign in with Apple is still on Welcome, the same size, above Google.
+  - 5.1.1(v): account deletion covers all three providers.
+  - Google uses ASWebAuthenticationSession, not an embedded webview.
+- Secrets: the diff adds only the non-secret placeholder. The plist is still gitignored.

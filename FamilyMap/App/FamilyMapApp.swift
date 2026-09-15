@@ -1,4 +1,5 @@
 import SwiftUI
+import GoogleSignIn
 
 @main
 struct FamilyMapApp: App {
@@ -17,6 +18,10 @@ struct FamilyMapApp: App {
                     appDelegate.onPushOpened = { route in
                         appState.handlePush(route)
                     }
+                }
+                // Google sign-in redirect (com.googleusercontent.apps.… URL scheme, project.yml).
+                .onOpenURL { url in
+                    _ = GIDSignIn.sharedInstance.handle(url)
                 }
         }
     }

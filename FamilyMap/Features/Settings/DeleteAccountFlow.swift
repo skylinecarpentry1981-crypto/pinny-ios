@@ -1,9 +1,10 @@
 import SwiftUI
+import UIKit
 import AuthenticationServices
 
 /// State machine for Apple 5.1.1(v) account deletion (DESIGN-SPEC §9.4):
 /// idle -> confirm1 (alert) -> confirm2 (destructive confirm) -> deleting
-///   -> done, or on `.requiresRecentLogin` -> reauth (apple | password) -> deleting -> done.
+///   -> done, or on `.requiresRecentLogin` -> reauth (apple | google | password) -> deleting -> done.
 /// "deleting" is `isDeleting` on top of the step it started from, so that screen shows the spinner
 /// and disables Cancel. Any other failure stays on the same step with `errorMessage`.
 @MainActor
@@ -13,6 +14,7 @@ final class DeleteAccountViewModel: ObservableObject {
         case confirm1
         case confirm2
         case reauthApple
+        case reauthGoogle
         case reauthPassword
         case done
     }
@@ -28,7 +30,7 @@ final class DeleteAccountViewModel: ObservableObject {
 
     var isSheetPresented: Bool {
         switch step {
-        case .confirm2, .reauthApple, .reauthPassword: return true
+        case .confirm2, .reauthApple, .reauthGoogle, .reauthPassword: return true
         case .idle, .confirm1, .done: return false
         }
     }
@@ -48,8 +50,8 @@ final class DeleteAccountViewModel: ObservableObject {
     }
 
     /// Step 2. Apple users always re-run Sign in with Apple so the token can be revoked (Apple requires
-    /// revocation on deletion, even for a fresh session). Email users delete first and re-auth only
-    /// on `.requiresRecentLogin`.
+    /// revocation on deletion, even for a fresh session). Email and Google users delete first and
+    /// re-auth only on `.requiresRecentLogin`.
     func confirmDelete(appState: AppState) {
         if appState.authService.currentProvider == .apple {
             errorMessage = nil
@@ -88,6 +90,15 @@ final class DeleteAccountViewModel: ObservableObject {
         delete(with: .password(password), appState: appState)
     }
 
+    /// Runs Google sign-in again over this sheet, then reauthenticates and deletes.
+    func deleteWithGoogle(appState: AppState) {
+        guard let viewController = UIApplication.shared.topViewController else {
+            errorMessage = AuthError.googleFailed.userMessage
+            return
+        }
+        delete(with: .google(presenting: viewController), appState: appState)
+    }
+
     private func delete(with reauth: Reauthentication?, appState: AppState) {
         guard !isDeleting else { return }
         isDeleting = true
@@ -105,6 +116,8 @@ final class DeleteAccountViewModel: ObservableObject {
     }
 
     private func handleFailure(_ error: Error, provider: AuthProvider) {
+        // Closing the Google sheet: stay on this step with no error.
+        if (error as? AuthError) == .canceled { return }
         // Only a stale session moves to re-auth; the .info banner on that step explains why.
         guard (error as? AuthError) == .requiresRecentLogin, step == .confirm2 else {
             errorMessage = error.userMessage
@@ -112,6 +125,7 @@ final class DeleteAccountViewModel: ObservableObject {
         }
         switch provider {
         case .apple: step = .reauthApple
+        case .google: step = .reauthGoogle
         case .password: step = .reauthPassword
         case .unknown: errorMessage = error.userMessage
         }
@@ -162,6 +176,8 @@ struct DeleteAccountSheet: View {
             confirmView
         case .reauthApple:
             reauthAppleView
+        case .reauthGoogle:
+            reauthGoogleView
         case .reauthPassword:
             reauthPasswordView
         case .idle, .confirm1, .done:
@@ -185,7 +201,7 @@ struct DeleteAccountSheet: View {
         }
     }
 
-    /// Email password step only (shown after Firebase asks for a recent login).
+    /// Email and Google steps (shown only after Firebase asks for a recent login).
     private var reauthBanner: some View {
         InfoBanner(systemImage: "lock", message: AuthError.requiresRecentLogin.userMessage)
     }
@@ -213,6 +229,16 @@ struct DeleteAccountSheet: View {
                 if viewModel.isDeleting {
                     ProgressView()
                 }
+            }
+        }
+    }
+
+    private var reauthGoogleView: some View {
+        VStack(spacing: FMSpacing.lg) {
+            reauthBanner
+
+            ContinueWithGoogleButton(isLoading: viewModel.isDeleting) {
+                viewModel.deleteWithGoogle(appState: appState)
             }
         }
     }

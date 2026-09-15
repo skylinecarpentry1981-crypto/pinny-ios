@@ -117,6 +117,15 @@ jobs:
             echo "::error::GoogleService-Info.plist is for bundle ID '$PLIST_BUNDLE', expected com.skyline.pinny. Download the plist of the Pinny iOS app in Firebase."
             exit 1
           fi
+          # Google sign-in URL scheme: always taken from this plist (the archive step passes it
+          # as GOOGLE_REVERSED_CLIENT_ID), so it can never drift from project.yml's placeholder.
+          REVERSED_CLIENT_ID=$(/usr/libexec/PlistBuddy -c "Print :REVERSED_CLIENT_ID" "$PLIST" 2>/dev/null || true)
+          if [ -z "$REVERSED_CLIENT_ID" ]; then
+            echo "::error::GoogleService-Info.plist has no REVERSED_CLIENT_ID. Enable Google sign-in in Firebase, then re-download GoogleService-Info.plist and update the GOOGLE_SERVICE_INFO_PLIST_B64 secret."
+            exit 1
+          fi
+          echo "Google sign-in URL scheme: $REVERSED_CLIENT_ID"
+          echo "GOOGLE_REVERSED_CLIENT_ID=$REVERSED_CLIENT_ID" >> "$GITHUB_ENV"
 
       - name: Write App Store Connect API key
         id: apikey
@@ -176,6 +185,7 @@ jobs:
             CODE_SIGN_STYLE=Automatic \
             DEVELOPMENT_TEAM="$TEAM_ID" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            GOOGLE_REVERSED_CLIENT_ID="$GOOGLE_REVERSED_CLIENT_ID" \
             2>&1 | tee "$LOG_DIR/archive.log" | beautify
 
       - name: Export IPA (App Store Connect signing)

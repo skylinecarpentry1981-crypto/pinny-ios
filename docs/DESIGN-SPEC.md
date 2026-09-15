@@ -78,6 +78,7 @@ Legend for states: **L** loading, **E** empty, **X** error, **P** permission-den
 │                              │
 │                              │
 │ [  Sign in with Apple     ]  │  ASAuthorizationAppleIDButton, black, 50pt
+│ [ G Continue with Google  ]  │  ContinueWithGoogleButton, white, 50pt, 12pt gap
 │                              │
 │      Use email instead       │  .footnote link, secondary
 │                              │
@@ -85,7 +86,8 @@ Legend for states: **L** loading, **E** empty, **X** error, **P** permission-den
 │ Terms · Privacy              │
 └──────────────────────────────┘
 ```
-- Components: `PinnyMascot`, title `Pinny`, tagline `Your family, one tap away`, privacy line `Shares your location only when you open the app.` (keeps §1.5 on the first screen), `SignInWithAppleButton`, secondary link, legal caption.
+- Components: `PinnyMascot`, title `Pinny`, tagline `Your family, one tap away`, privacy line `Shares your location only when you open the app.` (keeps §1.5 on the first screen), `SignInWithAppleButton`, `ContinueWithGoogleButton`, secondary link, legal caption.
+- **Apple and Google are equal primaries** (same 50 pt height and PrimaryButton radius; Sign in with Apple stays, which satisfies guideline 4.8). Google button: white fill in both modes, `#747775` 1 pt hairline, `.headline` label `Continue with Google` in `#1F1F1F` (16.1:1), a `.title3` bold "G" in `#4285F4` (large text 3.6:1, hidden from VoiceOver). While one is signing in, both buttons and the email link are disabled; the active one shows the spinner. Cancelling the Google sheet shows nothing.
 - **Mascot:** 120 × 144 pt, centred, decorative. Idle bob: offset y 0 → −6 pt → 0 over 2 s, ease-in-out, repeating; starts on appear, stops when the screen is gone. **Reduce Motion → static.** At accessibility text sizes the mascot drops to 80 × 96 pt so the buttons stay on screen on SE.
 - "Use email instead" pushes a minimal Email / Password form with a single **PrimaryButton "Continue"** that both signs in and creates an account (Firebase `signIn` → on `userNotFound` → `createUser`). **Assumption, flag:** email/password kept as a fallback for family members without Apple ID; if product wants Apple-only, drop the link.
 - **L:** button shows spinner, disabled. **X:** InfoBanner (red) under the button: "Couldn't sign in. Check your connection and try again."
@@ -374,7 +376,7 @@ Timestamps refresh on a 60 s timer while the view is visible, and on `scenePhase
 
 ## Assumptions (for review)
 
-1. **Auth:** Sign in with Apple primary; email/password secondary fallback. Drop the link if Apple-only is preferred.
+1. **Auth:** Sign in with Apple and Continue with Google are the primaries (§3.1); email/password secondary fallback. Drop the link if Apple/Google-only is preferred.
 2. **SOS confirm:** hold-to-confirm 1.5 s (not 2-step tap).
 3. **Emergency number:** `000` (AU) on the SOS-sent state; kept as a constant.
 4. **Photo upload** is stage 2; stage 1 ships initials only.
@@ -391,9 +393,10 @@ Copy rules: calm, ≤ 60 chars, one sentence, says what to do next. Errors rende
 | Case | Source | String |
 |---|---|---|
 | Apple sign-in failed (not cancel) | `ASAuthorizationError` ≠ `.canceled`, or Firebase credential error | `Apple sign-in didn't work. Try again.` |
+| Google sign-in failed (not cancel) | `GIDSignInError` ≠ `.canceled`, no Google client ID, or Firebase credential error | `Google sign-in didn't work. Try again.` |
 | Wrong password | `.wrongPassword` / `.invalidCredential` | `Wrong password. Try again or reset it.` |
 | User not found | `.userNotFound` | `No account with that email. Create one?` |
-| Email already in use | `.emailAlreadyInUse` | `That email already has an account. Sign in.` |
+| Email already in use | `.emailAlreadyInUse`, or `.accountExistsWithDifferentCredential` (Google, same email as an Apple/email account) | `That email already has an account. Sign in.` |
 | Weak password (< 6) | `.weakPassword` or local check | `Use at least 6 characters.` |
 | Invalid email | `.invalidEmail` or local check | `Enter a valid email address.` |
 | Network offline | `.networkError` / `URLError.notConnectedToInternet` | `You're offline. Check your connection.` |
@@ -403,7 +406,7 @@ Copy rules: calm, ≤ 60 chars, one sentence, says what to do next. Errors rende
 | Requires recent login | `.requiresRecentLogin` | `For your security, sign in again to confirm.` |
 | Generic unknown | anything else | `Something went wrong. Try again.` |
 
-Cancelled Apple sign-in shows nothing. "Wrong password" and "User not found" are shown as-is (no enumeration masking) — this is a family app, not a bank.
+Cancelled Apple or Google sign-in shows nothing. "Wrong password" and "User not found" are shown as-is (no enumeration masking) — this is a family app, not a bank.
 
 ### 9.2 Email sign-in / create-account
 
@@ -456,6 +459,7 @@ Cancelled Apple sign-in shows nothing. "Wrong password" and "User not found" are
 3. **Re-authenticate** — depends on the sign-in provider:
    - **Apple: always shown.** Tapping `Delete my account` in step 2 opens this step every time, because we need a fresh Apple authorisation code to revoke the Apple token (Apple requires it). InfoBanner `.info`: `Sign in with Apple to confirm.` with the message `Apple needs to confirm before we delete your account.` Below it is `SignInWithAppleButton(.continue)` plus a plain `Cancel`. On success: reauthenticate, revoke the Apple token, then delete, with no extra tap. If the user cancels the Apple sheet, stay on this step with no error.
    - **Email: only if Firebase asks.** Try the delete first. If Firebase throws `requiresRecentLogin`, open a `.sheet` with InfoBanner `.info` `For your security, sign in again to confirm.`, a `Password` SecureField, and PrimaryButton `Confirm and delete`. On success: reauthenticate, then delete. A wrong password shows the §9.1 string in the sheet's `ErrorBanner`. If Firebase doesn't ask, go straight to step 4.
+   - **Google: only if Firebase asks.** Same as email, but the sheet shows the same InfoBanner with `ContinueWithGoogleButton` instead of the password field. Tapping it runs Google sign-in again; on success: reauthenticate, then delete, with no extra tap. No token revocation. Cancelling the Google sheet stays on this step with no error; a failure (or picking a different Google account) shows `Google sign-in didn't work. Try again.`
 4. **End state** — AuthGate routes to Welcome; toast (3 s) `Your account has been deleted.` No further dialogs.
 
 **L:** step 2 button spinner, Cancel disabled. **X:** `ErrorBanner` at top of step 2 with the mapped string; button re-enabled.
