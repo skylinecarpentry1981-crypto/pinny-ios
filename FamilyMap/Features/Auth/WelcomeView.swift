@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import AuthenticationServices
+import FirebaseCore
 
 @MainActor
 final class WelcomeViewModel: ObservableObject {
@@ -71,6 +72,11 @@ final class WelcomeViewModel: ObservableObject {
 struct WelcomeView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.colorScheme) private var colorScheme
+
+    /// Google sign-in needs an iOS OAuth client ID (CLIENT_ID) in GoogleService-Info.plist.
+    private var isGoogleSignInAvailable: Bool {
+        FirebaseApp.app()?.options.clientID?.isEmpty == false
+    }
     @StateObject private var viewModel = WelcomeViewModel()
 
     var body: some View {
@@ -120,11 +126,14 @@ struct WelcomeView: View {
                         }
                     }
 
-                    ContinueWithGoogleButton(isLoading: viewModel.isGoogleBusy) {
-                        viewModel.signInWithGoogle(authService: appState.authService)
+                    // Shown only when GoogleService-Info.plist carries an iOS OAuth client ID.
+                    if isGoogleSignInAvailable {
+                        ContinueWithGoogleButton(isLoading: viewModel.isGoogleBusy) {
+                            viewModel.signInWithGoogle(authService: appState.authService)
+                        }
+                        .opacity(viewModel.isAppleBusy ? 0.4 : 1)
+                        .disabled(viewModel.isSigningIn)
                     }
-                    .opacity(viewModel.isAppleBusy ? 0.4 : 1)
-                    .disabled(viewModel.isSigningIn)
                 }
 
                 NavigationLink("Use email instead") {
