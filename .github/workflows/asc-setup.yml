@@ -20,6 +20,11 @@ on:
         type: string
         required: false
         default: ""
+      command:
+        description: "setup (default) or status (read-only: builds, testers, in-app purchases)"
+        type: choice
+        options: [setup, status]
+        default: setup
 
 permissions:
   contents: read
@@ -52,4 +57,10 @@ jobs:
           # Passed through env (not inlined into the script) so the input
           # can't inject shell commands.
           TESTER_EMAIL: ${{ inputs.tester_email }}
-        run: python scripts/asc_setup.py setup --tester-email "$TESTER_EMAIL"
+          ASC_COMMAND: ${{ inputs.command }}
+        run: |
+          if [ "$ASC_COMMAND" = "status" ]; then
+            python scripts/asc_setup.py status
+          else
+            python scripts/asc_setup.py setup --tester-email "$TESTER_EMAIL"
+          fi

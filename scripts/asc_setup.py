@@ -391,6 +391,41 @@ def cmd_revoke_runner_certs(_args):
     return 0
 
 
+def cmd_status(_args):
+    """Read-only: builds + processing state, TestFlight groups/testers, in-app purchases."""
+    c = load_client()
+    app = find_app(c)
+    if not app:
+        print("APP RECORD MISSING")
+        return 1
+    app_id = app["id"]
+    print(f"App: {app['attributes'].get('name')} (Apple ID {app_id})")
+    print("== Builds (newest first) ==")
+    builds = c.get_all("/v1/builds", {"filter[app]": app_id, "sort": "-uploadedDate", "limit": 5})
+    if not builds:
+        print("  none uploaded yet")
+    for b in builds:
+        a = b["attributes"]
+        print(f"  build {a.get('version')}: {a.get('processingState')} (uploaded {a.get('uploadedDate')}, expired={a.get('expired')})")
+    print("== TestFlight groups ==")
+    for g in c.get_all("/v1/betaGroups", {"filter[app]": app_id, "limit": 200}):
+        ga = g["attributes"]
+        testers = c.get_all(f"/v1/betaGroups/{g['id']}/betaTesters", {"limit": 200})
+        names = ", ".join(mask_email(t["attributes"].get("email") or "") for t in testers) or "no testers"
+        print(f"  {ga.get('name')} ({'internal' if ga.get('isInternalGroup') else 'external'}): {names}")
+    print("== In-app purchases ==")
+    try:
+        iaps = c.get_all(f"/v1/apps/{app_id}/inAppPurchasesV2", {"limit": 200})
+        if not iaps:
+            print("  none (create 'Family Pass', product id com.skyline.pinny.familypass)")
+        for i in iaps:
+            ia = i["attributes"]
+            print(f"  {ia.get('productId')}: {ia.get('inAppPurchaseType')} / {ia.get('state')}")
+    except ApiError as e:
+        print(f"  could not list in-app purchases: {e}")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -399,6 +434,8 @@ def main():
     p_setup.set_defaults(func=cmd_setup)
     p_revoke = sub.add_parser("revoke-runner-certs", help="CI only: revoke this runner's development certificate")
     p_revoke.set_defaults(func=cmd_revoke_runner_certs)
+    p_status = sub.add_parser("status", help="read-only: builds, TestFlight groups, in-app purchases")
+    p_status.set_defaults(func=cmd_status)
     args = parser.parse_args()
     sys.exit(args.func(args))
 
