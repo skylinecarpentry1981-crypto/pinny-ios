@@ -144,11 +144,13 @@ struct WelcomeView: View {
                 .frame(minHeight: FMSize.minTapTarget)
                 .disabled(viewModel.isSigningIn)
 
-                // TODO(stage 6): link Terms and Privacy to their hosted URLs.
-                Text("By continuing you agree to Terms · Privacy")
-                    .font(.caption2)
-                    .foregroundColor(Color(uiColor: .tertiaryLabel))
-                    .multilineTextAlignment(.center)
+                // Apple 5.1.1(i): the privacy policy must be reachable in-app. Hosted on Firebase Hosting.
+                if let privacyURL = URL(string: "https://pinny-family-4vea.web.app/privacy") {
+                    Link("Privacy Policy", destination: privacyURL)
+                        .font(.caption2)
+                        .foregroundColor(Color(uiColor: .tertiaryLabel))
+                        .frame(minHeight: FMSize.minTapTarget)
+                }
 
                 if let errorMessage = viewModel.errorMessage {
                     ErrorBanner(message: errorMessage)

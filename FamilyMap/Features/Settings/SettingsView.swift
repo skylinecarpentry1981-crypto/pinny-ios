@@ -70,6 +70,12 @@ struct SettingsView: View {
                 Text("Your location and battery level are shared with your family only when you open Pinny, tap Refresh or Check in, or send an SOS. There is no background tracking. Delete your account at any time to remove your account and location data.")
                     .font(.footnote)
                     .foregroundColor(Color.fm.textSecondary)
+                if let privacyURL = URL(string: "https://pinny-family-4vea.web.app/privacy") {
+                    Link("Privacy Policy", destination: privacyURL)
+                }
+                if let supportURL = URL(string: "https://pinny-family-4vea.web.app/support") {
+                    Link("Support", destination: supportURL)
+                }
             }
 
             Section {
