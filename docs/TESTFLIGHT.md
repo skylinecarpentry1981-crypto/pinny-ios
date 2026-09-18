@@ -249,12 +249,12 @@ Hardcoding `production` would break Debug signing, so it isn't done.
 | # | Step | Who | Status |
 |---|---|---|---|
 | PA1 | Path A: `ios-testflight.yml`, `asc-setup.yml`, `scripts/asc_setup.py`; `DEVELOPMENT_TEAM` X86UHCK734 in `project.yml` | Claude | Done |
-| PA2 | Path A: Firebase on Spark B1–B4 + rules/indexes deploy (same as 0b, 0c) | Owner; Claude after OK | To do |
-| PA3 | Path A step 1: set the four GitHub secrets | Owner | To do |
-| PA4 | Run `asc-setup`: bundle ID + capabilities, device count, Apple ID | Claude | To do |
-| PA5 | If reported: create the App Store Connect app record; register an iPhone | Owner | To do |
-| PA6 | Run `ios-testflight`; fix Swift errors from the log; if "Cloud signing permission error", owner makes an Admin key and re-sets 2 secrets | Claude; Owner | To do |
-| PA7 | Run `asc-setup` with `tester_email` (internal group "Owner") | Claude | To do |
+| PA2 | Path A: Firebase on Spark B1–B4 + rules/indexes deploy (same as 0b, 0c) | Owner; Claude after OK | Done (project `pinny-family-4vea`, Sydney; rules deployed) |
+| PA3 | Path A step 1: set the four GitHub secrets | Owner | Done |
+| PA4 | Run `asc-setup`: bundle ID + capabilities, device count, Apple ID | Claude | Done (Apple ID 6813281782, 1 device) |
+| PA5 | If reported: create the App Store Connect app record; register an iPhone | Owner | Done (Pinny Family Map) |
+| PA6 | Run `ios-testflight`; fix Swift errors from the log; if "Cloud signing permission error", owner makes an Admin key and re-sets 2 secrets | Claude; Owner | Done (build 103 uploaded 2026-09-18; 1 compile fix) |
+| PA7 | Run `asc-setup` with `tester_email` (internal group "Owner") | Claude | Group created; API refuses to add the Account Holder (409) → owner adds themself in TestFlight › Internal Testing › Owner |
 | PA8 | Install Pinny via the TestFlight app | Owner | To do |
 | 0a | Path B fast path: `ios-internal` workflow in `codemagic.yaml` | Claude | Done |
 | 0b | Fast path: Firebase on Spark, B1–B4 (Email/Password only, enumeration protection off) | Owner | To do |
