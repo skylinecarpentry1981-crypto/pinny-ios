@@ -166,7 +166,8 @@ def ensure_bundle_id(c):
 
 
 def ensure_capabilities(c, bundle_pk):
-    existing = c.get_all(f"/v1/bundleIds/{bundle_pk}/bundleIdCapabilities", {"limit": 200})
+    # This relationship endpoint rejects paging parameters (PARAMETER_ERROR.ILLEGAL on "limit").
+    existing = c.get_all(f"/v1/bundleIds/{bundle_pk}/bundleIdCapabilities")
     have = {x["attributes"].get("capabilityType") for x in existing}
     results = {}
     for cap_type, label, settings in CAPABILITIES:
