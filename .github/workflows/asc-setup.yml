@@ -105,6 +105,8 @@ jobs:
           done
           if [ "$ASC_COMMAND" = "status" ]; then
             python scripts/asc_setup.py status
+          elif [ "$ASC_COMMAND" = "resend-tester" ]; then
+            python scripts/asc_setup.py resend-tester --email "$TESTER_EMAIL"
           elif [ "$ASC_COMMAND" = "invite-user" ]; then
             python scripts/asc_setup.py invite-user --email "$TESTER_EMAIL" --first-name "$CONTACT_FIRST_NAME" --last-name "$CONTACT_LAST_NAME"
           elif [ "$ASC_COMMAND" = "family-link" ]; then

@@ -1098,6 +1098,36 @@ def cmd_invite_user(args):
         return 1
 
 
+def cmd_resend_tester(args):
+    """Re-send the TestFlight invitation email (with its redeem code) to an existing tester."""
+    c = load_client()
+    email = (args.email or "").strip()
+    app = find_app(c)
+    if not app or not email:
+        print("::error::app record or --email missing")
+        return 1
+    shown = mask_email(email)
+    testers = c.get_all("/v1/betaTesters", {"filter[email]": email, "filter[apps]": app["id"], "limit": 200})
+    tester = next((t for t in testers if (t["attributes"].get("email") or "").lower() == email.lower()), None)
+    if not tester:
+        print(f"::error::{shown} is not a tester of this app yet")
+        return 1
+    print(f"{shown}: tester state = {tester['attributes'].get('state')}, invite type = {tester['attributes'].get('inviteType')}")
+    try:
+        c.request("POST", "/v1/betaTesterInvitations", body={"data": {
+            "type": "betaTesterInvitations",
+            "relationships": {
+                "app": {"data": {"type": "apps", "id": app["id"]}},
+                "betaTester": {"data": {"type": "betaTesters", "id": tester["id"]}},
+            },
+        }})
+        print(f"{shown}: TestFlight invitation email sent again")
+        return 0
+    except ApiError as e:
+        fail_line(f"Could not re-send the TestFlight invitation to {shown}", e)
+        return 1
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1119,6 +1149,9 @@ def main():
     p_invite.add_argument("--first-name", default="")
     p_invite.add_argument("--last-name", default="")
     p_invite.set_defaults(func=cmd_invite_user)
+    p_resend = sub.add_parser("resend-tester", help="re-send the TestFlight invitation email to a tester")
+    p_resend.add_argument("--email", default="")
+    p_resend.set_defaults(func=cmd_resend_tester)
     p_listing = sub.add_parser("listing", help="fill the App Store listing (no submission, no build, no pricing)")
     p_listing.add_argument("--contact-phone", default="", help="App Review contact phone (never printed)")
     p_listing.set_defaults(func=cmd_listing)
