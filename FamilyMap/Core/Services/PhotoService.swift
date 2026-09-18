@@ -28,7 +28,10 @@ final class PhotoService: ObservableObject {
 
     /// Computed so `Storage.storage()` is never called before `FirebaseApp.configure()`.
     private func avatarRef(uid: String) -> StorageReference {
-        Storage.storage().reference(withPath: "avatars/\(uid).jpg")
+        let storage = Storage.storage()
+        storage.maxUploadRetryTime = 15      // DESIGN-SPEC §15: fail within 15 s instead of Firebase's 600 s default
+        storage.maxOperationRetryTime = 15
+        return storage.reference(withPath: "avatars/\(uid).jpg")
     }
 
     /// Ends in `.idle` on success or `.failed(message)`; the caller shows the message and calls `reset()`.
