@@ -1169,3 +1169,88 @@ describe("places", () => {
     await assertFails(getDocs(placesCol(B)));
   });
 });
+
+// ---------------------------------------------------------------------------
+// families/{familyId}/pings + pingState — Stage 10 "Ask location"
+// ---------------------------------------------------------------------------
+describe("stage 10: pings", () => {
+  beforeEach(seedFamilyAB);
+
+  const ping = (from, to, extra = {}) => ({
+    fromUid: from,
+    fromName: "Alice",
+    toUid: to,
+    createdAt: serverTimestamp(),
+    ...extra,
+  });
+  const pingRef = (uid, id = "g1") => doc(db(uid), "families", FAM, "pings", id);
+  const pingsCol = (uid) => collection(db(uid), "families", FAM, "pings");
+  const stateRef = (uid) => doc(db(uid), "families", FAM, "pingState", `${A}_${B}`);
+  /** A ping A -> B already exists (the function has not deleted it yet). */
+  const seedPing = () =>
+    seed((adb) => setDoc(doc(adb, "families", FAM, "pings", "g1"), { ...ping(A, B), createdAt: new Date() }));
+
+  it("member pings another member", async () => {
+    await assertSucceeds(setDoc(pingRef(A), ping(A, B)));
+  });
+
+  it("pinging yourself fails", async () => {
+    await assertFails(setDoc(pingRef(A), ping(A, A)));
+  });
+
+  it("toUid who is not a member fails", async () => {
+    await assertFails(setDoc(pingRef(A), ping(A, C)));
+    await assertFails(setDoc(pingRef(A), ping(A, 42)));
+  });
+
+  it("fromUid of someone else fails", async () => {
+    await assertFails(setDoc(pingRef(A), ping(B, A)));
+  });
+
+  it("non-member create fails", async () => {
+    await assertFails(setDoc(pingRef(C), ping(C, A)));
+  });
+
+  it("extra key fails", async () => {
+    await assertFails(setDoc(pingRef(A), ping(A, B, { note: "now!" })));
+  });
+
+  it("missing key fails", async () => {
+    const { fromName, ...rest } = ping(A, B);
+    await assertFails(setDoc(pingRef(A), rest));
+  });
+
+  it("fromName empty or 41 chars fails", async () => {
+    await assertFails(setDoc(pingRef(A), ping(A, B, { fromName: "" })));
+    await assertFails(setDoc(pingRef(A), ping(A, B, { fromName: "x".repeat(41) })));
+  });
+
+  it("client createdAt fails", async () => {
+    // Not `new Date()`: it can equal the emulator's request.time to the ms (flaky).
+    await assertFails(setDoc(pingRef(A), ping(A, B, { createdAt: new Date(Date.now() - 5000) })));
+  });
+
+  it("members read pings, non-members do not", async () => {
+    await seedPing();
+    await assertSucceeds(getDoc(pingRef(B)));
+    await assertSucceeds(getDocs(pingsCol(B)));
+    await assertFails(getDoc(pingRef(C)));
+    await assertFails(getDocs(pingsCol(C)));
+  });
+
+  it("update and delete fail, even for the sender", async () => {
+    await seedPing();
+    await assertFails(updateDoc(pingRef(A), { fromName: "Al" }));
+    await assertFails(setDoc(pingRef(A), ping(A, B)));
+    await assertFails(deleteDoc(pingRef(A)));
+    await assertFails(deleteDoc(pingRef(B)));
+  });
+
+  it("pingState is closed to clients (read and write)", async () => {
+    await seed((adb) => setDoc(doc(adb, "families", FAM, "pingState", `${A}_${B}`), { at: new Date() }));
+    await assertFails(getDoc(stateRef(A)));
+    await assertFails(getDocs(collection(db(A), "families", FAM, "pingState")));
+    await assertFails(setDoc(stateRef(A), { at: serverTimestamp() }));
+    await assertFails(deleteDoc(stateRef(A)));
+  });
+});

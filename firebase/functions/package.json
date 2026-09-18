@@ -13,7 +13,7 @@
     "serve": "npm run build && firebase emulators:start --only functions,firestore",
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log",
-    "test": "npm run build && node --test test/checkin.test.mjs test/pass.test.mjs test/certs.test.mjs test/places.test.mjs test/sos.test.mjs test/sosReminder.test.mjs test/token.test.mjs"
+    "test": "npm run build && node --test test/checkin.test.mjs test/pass.test.mjs test/certs.test.mjs test/places.test.mjs test/sos.test.mjs test/sosReminder.test.mjs test/token.test.mjs test/ping.test.mjs"
   },
   "dependencies": {
     "@apple/app-store-server-library": "^3.1.0",

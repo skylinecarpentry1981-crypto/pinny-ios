@@ -33,6 +33,13 @@ enum FamilyError: LocalizedError {
     }
 }
 
+/// Stage 10: an Ask location that failed for a reason other than being offline.
+struct AskLocationError: LocalizedError {
+    let firstName: String
+
+    var errorDescription: String? { AppError.askFailed(firstName) }
+}
+
 /// What triggered a share, written as `lastLocation.src` so the server never sends a check-in push
 /// for an SOS (STAGE-3.6-CONTRACT §3, §5).
 enum LocationSource: String {
@@ -79,6 +86,9 @@ protocol FamilyService: AnyObject {
     func observeMembers(familyId: String, onChange: @escaping ([AppUser]) -> Void) -> ListenerCancel
     /// Overwrites `users/{userId}.lastLocation` (latest only, no history) with a server timestamp.
     func updateLocation(userId: String, share: LocationShare) async throws
+    /// Stage 10 Ask location: creates `families/{familyId}/pings/{pingId}`; the server pushes `toUid`
+    /// and deletes the doc. `fromName` is my display name (clamped to 40 UTF-16 units here).
+    func askLocation(familyId: String, to toUid: String, fromName: String) async throws
 }
 
 /// Firestore implementation. Every write matches the shapes in `firebase/firestore.rules`.
@@ -301,6 +311,29 @@ final class FirebaseFamilyService: FamilyService {
         do {
             _ = try await db.runTransaction { transaction, _ in
                 transaction.updateData(fields, forDocument: userRef)
+                return nil
+            }
+        } catch {
+            throw FamilyError.from(error)
+        }
+    }
+
+    /// Matches the `pings` create rule: exactly { fromUid, fromName, toUid, createdAt }, `createdAt`
+    /// server-set. A write-only transaction, like `updateLocation`: it fails while offline and is never
+    /// replayed, so nobody is asked minutes later on reconnect.
+    func askLocation(familyId: String, to toUid: String, fromName: String) async throws {
+        let uid = try requireUid()
+        let trimmed = fromName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fields: [String: Any] = [
+            "fromUid": uid,
+            "fromName": (trimmed.isEmpty ? "Family member" : trimmed).clamped(toUTF16: 40),
+            "toUid": toUid,
+            "createdAt": FieldValue.serverTimestamp()
+        ]
+        let pingRef = families.document(familyId).collection("pings").document()
+        do {
+            _ = try await db.runTransaction { transaction, _ in
+                transaction.setData(fields, forDocument: pingRef)
                 return nil
             }
         } catch {

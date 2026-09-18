@@ -24,6 +24,10 @@ struct FamilyMapApp: App {
                     appDelegate.onSOSPresented = { route in
                         appState.acknowledgeSOSPush(route)
                     }
+                    // Stage 10: an Ask location banner shown while Pinny is active shares once (no tab switch).
+                    appDelegate.onPingPresented = { route in
+                        appState.sharePingLocation(route)
+                    }
                 }
                 // Google sign-in redirect (com.googleusercontent.apps.… URL scheme, project.yml).
                 .onOpenURL { url in

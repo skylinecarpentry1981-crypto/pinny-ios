@@ -45,5 +45,6 @@ Rules and functions live in `firebase/`. Follow [docs/BACKEND-SETUP.md](docs/BAC
 | 7 | Family Pass in-app purchase (StoreKit 2, server-verified) + worldwide App Store release | In review |
 | 8 | Profile photos (Google picture seeding, Photos picker → Firebase Storage `avatars/{uid}.jpg`) | In review |
 | 9 | SOS keeps alerting until acknowledged (29 s siren, reminders every 30 s for 5 min, `acks/{uid}`) | In review |
+| 10 | Ask location: drawer button → `pings` doc → push → the member taps and shares once (no background tracking) | In review |
 
 Search the code for `TODO(stage N)` to find every stub.

@@ -9,17 +9,21 @@ struct DrawerMemberRow: View {
     let isExpanded: Bool
     /// Disables Check in while any share is in flight.
     let isSharing: Bool
+    /// Stage 10: true while an ask is in flight and for 60 s after a successful one.
+    let isAskDisabled: Bool
     let onTap: () -> Void
     let onOpenInMaps: () -> Void
+    let onAskLocation: () -> Void
     let onMessage: () -> Void
     let onCheckIn: () -> Void
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var point: LocationPoint? { member.lastLocation }
-    /// Other members without a location are greyed and only offer Message.
+    /// Other members without a location are greyed and offer Ask location and Message.
     private var isGreyed: Bool { !isMe && point == nil }
     private var name: String { isMe ? "You" : member.name }
+    private var askLabel: String { "Ask \(member.firstName) for their location" }
 
     private var ringColor: Color {
         guard let point else { return .clear }
@@ -52,7 +56,9 @@ struct DrawerMemberRow: View {
             .modifier(RowAccessibilityActions(
                 isMe: isMe,
                 isLocated: point != nil,
+                askLabel: isAskDisabled ? nil : askLabel,
                 onOpenInMaps: onOpenInMaps,
+                onAskLocation: onAskLocation,
                 onMessage: onMessage,
                 onCheckIn: onCheckIn
             ))
@@ -110,17 +116,59 @@ struct DrawerMemberRow: View {
                 .frame(minHeight: FMSize.minTapTarget)
                 .disabled(isSharing)
         } else {
-            HStack(spacing: FMSpacing.sm) {
-                if point != nil {
-                    Button("Open in Maps", action: onOpenInMaps)
-                        .buttonStyle(.bordered)
-                        .frame(minHeight: FMSize.minTapTarget)
-                }
-                Button("Message", action: onMessage)
-                    .buttonStyle(.bordered)
-                    .frame(minHeight: FMSize.minTapTarget)
+            // Titles when the row is wide enough for them; icon-only otherwise (small phones, large text).
+            ViewThatFits(in: .horizontal) {
+                otherMemberActions(iconOnly: false)
+                otherMemberActions(iconOnly: true)
             }
         }
+    }
+
+    /// Open in Maps (located members only) · Ask location · Message.
+    private func otherMemberActions(iconOnly: Bool) -> some View {
+        HStack(spacing: FMSpacing.sm) {
+            if point != nil {
+                actionButton("Open in Maps", systemImage: "map", iconOnly: iconOnly, action: onOpenInMaps)
+            }
+            actionButton(
+                "Ask location",
+                systemImage: "location.magnifyingglass",
+                iconOnly: iconOnly,
+                titleWithIcon: true,
+                action: onAskLocation
+            )
+                .disabled(isAskDisabled)
+                .accessibilityLabel(askLabel)
+            actionButton("Message", systemImage: "message", iconOnly: iconOnly, action: onMessage)
+        }
+    }
+
+    /// Icon-only buttons keep their title as the VoiceOver label (`Label` does that by itself).
+    /// With titles, only Ask location carries its symbol; the two older buttons look as before.
+    private func actionButton(
+        _ title: String,
+        systemImage: String,
+        iconOnly: Bool,
+        titleWithIcon: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            if iconOnly {
+                Label(title, systemImage: systemImage)
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 28)
+            } else if titleWithIcon {
+                Label(title, systemImage: systemImage)
+                    .lineLimit(1)
+                    .fixedSize()
+            } else {
+                Text(title)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+        }
+        .buttonStyle(.bordered)
+        .frame(minHeight: FMSize.minTapTarget)
     }
 }
 
@@ -128,7 +176,10 @@ struct DrawerMemberRow: View {
 private struct RowAccessibilityActions: ViewModifier {
     let isMe: Bool
     let isLocated: Bool
+    /// "Ask {firstName} for their location"; nil while Ask location is disabled (no action offered).
+    let askLabel: String?
     let onOpenInMaps: () -> Void
+    let onAskLocation: () -> Void
     let onMessage: () -> Void
     let onCheckIn: () -> Void
 
@@ -136,12 +187,26 @@ private struct RowAccessibilityActions: ViewModifier {
     func body(content: Content) -> some View {
         if isMe {
             content.accessibilityAction(named: "Check in", onCheckIn)
-        } else if isLocated {
-            content
-                .accessibilityAction(named: "Open in Maps", onOpenInMaps)
-                .accessibilityAction(named: "Message", onMessage)
         } else {
-            content.accessibilityAction(named: "Message", onMessage)
+            content
+                .modifier(OptionalAccessibilityAction(name: isLocated ? "Open in Maps" : nil, action: onOpenInMaps))
+                .modifier(OptionalAccessibilityAction(name: askLabel, action: onAskLocation))
+                .accessibilityAction(named: "Message", onMessage)
+        }
+    }
+}
+
+/// Adds a named VoiceOver action only when `name` is set.
+private struct OptionalAccessibilityAction: ViewModifier {
+    let name: String?
+    let action: () -> Void
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let name {
+            content.accessibilityAction(named: name, action)
+        } else {
+            content
         }
     }
 }

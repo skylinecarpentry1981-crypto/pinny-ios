@@ -232,7 +232,15 @@ private struct MapHome: View {
     @State private var scrollRequest: DrawerScrollRequest?
     /// Measured height of the top stack, from the safe-area top (includes its 8 pt top padding).
     @State private var topStackHeight: CGFloat = 104
+    /// Stage 10 Ask location, in memory only: when each member was last asked. Set on tap (so the
+    /// button is off while the write runs), removed on failure, and 60 s after a success.
+    @State private var askedAt: [String: Date] = [:]
+    /// "Asked {firstName}" in the status capsule for 2 s.
+    @State private var askedText: String?
+    @State private var askError: String?
 
+    private static let askCooldownNanoseconds: UInt64 = 60_000_000_000
+    private static let askedVisibleNanoseconds: UInt64 = 2_000_000_000
     private static let sosSize: CGFloat = 64
     /// The floating SOS fades out over this distance as the drawer approaches full.
     private static let sosFadeDistance: CGFloat = 40
@@ -345,17 +353,20 @@ private struct MapHome: View {
     private var statusText: String? {
         switch locationSync.status {
         case .sharing: return "Sharing…"
-        case .shared: return "Shared just now"
-        case .idle, .failed: return nil
+        case .shared: return askedText ?? "Shared just now"
+        case .idle, .failed: return askedText
         }
     }
 
     private enum MapBanner {
         case locationOff
         case failure(String)
+        case askFailure(String)
     }
 
+    /// A failed Ask location answers a tap, so it shows first; it hides on tap or on the next ask.
     private var activeBanner: MapBanner? {
+        if let askError { return .askFailure(askError) }
         if locationService.isDenied { return .locationOff }
         if let message = locationSync.status.errorMessage { return .failure(message) }
         return nil
@@ -531,7 +542,8 @@ private struct MapHome: View {
             .accessibilityAddTraits(.isHeader)
     }
 
-    /// "Sharing..." while in flight, "Shared just now" for 2 s after success, else hidden.
+    /// "Sharing..." while in flight, "Shared just now" or "Asked {firstName}" for 2 s after success,
+    /// else hidden.
     @ViewBuilder
     private var statusCapsule: some View {
         if let text = statusText {
@@ -583,6 +595,11 @@ private struct MapHome: View {
                 .floatingOverMap()
                 .onTapGesture { locationSync.dismissError() }
                 .accessibilityAction(named: "Dismiss") { locationSync.dismissError() }
+        case .askFailure(let message):
+            ErrorBanner(message: message)
+                .floatingOverMap()
+                .onTapGesture { askError = nil }
+                .accessibilityAction(named: "Dismiss") { askError = nil }
         }
     }
 
@@ -641,8 +658,10 @@ private struct MapHome: View {
                         place: placeLine(for: entry.member),
                         isExpanded: entry.id == selectedMemberId,
                         isSharing: locationSync.status == .sharing,
+                        isAskDisabled: askedAt[entry.id] != nil,
                         onTap: { toggleRow(entry.id) },
                         onOpenInMaps: { openInMaps(entry.member) },
+                        onAskLocation: { askLocation(entry.member) },
                         onMessage: { appState.selectedTab = .chat },
                         onCheckIn: { manualShare() }
                     )
@@ -739,6 +758,35 @@ private struct MapHome: View {
             case .idle, .sharing:
                 break
             }
+        }
+    }
+
+    /// Ask location (Stage 10): one ping to the member. Success: "Asked {firstName}" for 2 s, a light
+    /// haptic, and the button stays off for 60 s for that member. Failure: error banner, button back on.
+    private func askLocation(_ member: AppUser) {
+        guard let memberId = member.id, askedAt[memberId] == nil else { return }
+        let firstName = member.firstName
+        askError = nil
+        askedAt[memberId] = Date()
+        Task { @MainActor in
+            do {
+                try await appState.askLocation(member)
+            } catch {
+                askedAt[memberId] = nil
+                askError = error.userMessage
+                UIAccessibility.post(notification: .announcement, argument: error.userMessage)
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+                return
+            }
+            let text = "Asked \(firstName)"
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            UIAccessibility.post(notification: .announcement, argument: text)
+            askedText = text
+            try? await Task.sleep(nanoseconds: Self.askedVisibleNanoseconds)
+            // A later ask (another member) owns the capsule now.
+            if askedText == text { askedText = nil }
+            try? await Task.sleep(nanoseconds: Self.askCooldownNanoseconds - Self.askedVisibleNanoseconds)
+            askedAt[memberId] = nil
         }
     }
 

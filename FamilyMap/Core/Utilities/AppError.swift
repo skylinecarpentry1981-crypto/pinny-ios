@@ -18,6 +18,8 @@ enum AppError {
     static let passNotFound = "No Family Pass found on this Apple ID."
     // Profile photo (STAGE-8-CONTRACT §3).
     static let photoUpdateFailed = "Couldn't update your photo. Try again."
+    // Ask location (STAGE-10-CONTRACT).
+    static func askFailed(_ firstName: String) -> String { "Couldn't ask \(firstName). Try again." }
 
     static func isOffline(_ error: Error) -> Bool {
         if let urlError = error as? URLError {
@@ -33,6 +35,7 @@ enum AppError {
         if let familyError = error as? FamilyError { return familyError.errorDescription ?? generic }
         if let placeError = error as? PlaceError { return placeError.errorDescription ?? generic }
         if let passError = error as? PassError { return passError.errorDescription ?? generic }
+        if let askError = error as? AskLocationError { return askError.errorDescription ?? generic }
         // One-shot fix timed out or Core Location failed (kCLErrorDomain).
         if error is LocationError || (error as NSError).domain == kCLErrorDomain { return locationUnavailable }
         if isOffline(error) { return offline }

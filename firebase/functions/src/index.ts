@@ -5,7 +5,8 @@
  *  onUserTokenWritten pushTokens/{uid} written -> delete other accounts' docs holding the same token (one phone, one account)
  *  onSOSMessage       chats/{familyId}/messages -> high-priority SOS push to whole family, then starts the reminders
  *  sosReminder        task queue (Stage 9)     -> re-sends the SOS push every 30 s (9x) to members who have not acked
- *  onFamilyUpdated    families/{id} updated    -> purge empty family (+ places, chat) / promote creator
+ *  onPingCreated      families/{id}/pings created (Stage 10) -> "asking where you are" push to one member, then deletes the ping
+ *  onFamilyUpdated    families/{id} updated    -> purge empty family (+ places, pings, chat) / promote creator
  *  onUserDeleted      Auth user deleted        -> Firestore clean-up (backs in-app "Delete account")
  *  redeemFamilyPass   callable { jws }         -> verify the StoreKit 2 purchase, write users/{uid}.pass (pass.ts)
  *  appStoreNotifications HTTPS (Apple V2)      -> REFUND / REVOKE remove the pass (pass.ts)
@@ -26,6 +27,7 @@ import { onTaskDispatched } from "firebase-functions/v2/tasks";
 import { GoogleAuth } from "google-auth-library";
 import * as functionsV1 from "firebase-functions/v1";
 import { shouldNotifyCheckIn } from "./checkin";
+import { shouldSendPing } from "./ping";
 import { placeFor } from "./places";
 import { sosBody } from "./sos";
 import {
@@ -106,6 +108,14 @@ interface MessageDoc {
   createdAt: Timestamp;
 }
 
+/** families/{familyId}/pings/{pingId} — Stage 10, shape enforced by the rules. */
+interface PingDoc {
+  fromUid: string;
+  fromName: string;
+  toUid: string;
+  createdAt: Timestamp;
+}
+
 interface Recipient {
   uid: string;
   token: string;
@@ -117,6 +127,8 @@ interface PushContent {
   data: Record<string, string>;
   /** SOS pushes are delivered at APNs priority 10 + time-sensitive. */
   urgent?: boolean;
+  /** `apns-priority` override; default "10" when urgent, else "5". */
+  priority?: "5" | "10";
   /** `apns-collapse-id`: a later push with the same id replaces the earlier banner. */
   collapseId?: string;
 }
@@ -160,7 +172,7 @@ async function sendToTokens(recipients: Recipient[], content: PushContent): Prom
     data: content.data,
     apns: {
       headers: {
-        "apns-priority": content.urgent ? "10" : "5",
+        "apns-priority": content.priority ?? (content.urgent ? "10" : "5"),
         // APNs rejects a collapse id over 64 bytes, and message ids are
         // client-chosen: never let an odd id cost the SOS push itself.
         ...(content.collapseId && Buffer.byteLength(content.collapseId) <= 64
@@ -209,7 +221,7 @@ async function sendToTokens(recipients: Recipient[], content: PushContent): Prom
 
 /**
  * Delete a family that has no members left: the family doc, its invite code,
- * its saved places and every chat message. Idempotent — re-checks inside a
+ * its saved places, pings (+ pingState) and every chat message. Idempotent — re-checks inside a
  * transaction so a concurrent join or a duplicate trigger delivery cannot
  * purge a live family. If the family doc is already gone, places and chat are
  * still swept, so a previous run that committed but failed during
@@ -235,6 +247,8 @@ async function purgeFamily(familyId: string, inviteCode: string): Promise<boolea
   // gone, so nothing can be re-added mid-sweep.
   await Promise.all([
     db.recursiveDelete(db.collection(`families/${familyId}/places`)),
+    db.recursiveDelete(db.collection(`families/${familyId}/pings`)),
+    db.recursiveDelete(db.collection(`families/${familyId}/pingState`)),
     db.recursiveDelete(db.doc(`chats/${familyId}`)),
   ]);
   logger.info("family purged", { familyId, outcome });
@@ -485,8 +499,57 @@ export const sosReminder = onTaskDispatched<SOSReminderTask>(
 );
 
 // ---------------------------------------------------------------------------
+// onPingCreated — "Ask location" (Stage 10)
+// A member asks another member where they are. One push to that member only
+// (the rules already checked both are in the family and fromUid is the
+// caller); tapping it opens the app, which shares once. No background
+// tracking. Rate limit: one push per fromUid -> toUid pair per 60 s, kept in
+// server-only families/{familyId}/pingState/{fromUid}_{toUid} = { at }; the
+// transaction also makes a duplicate trigger delivery harmless. The ping doc
+// is always deleted afterwards, so who-asked-whom is stored for seconds only.
+// ---------------------------------------------------------------------------
+
+export const onPingCreated = onDocumentCreated(
+  "families/{familyId}/pings/{pingId}",
+  async (event) => {
+    const snap = event.data;
+    if (!snap) return;
+    const ping = snap.data() as PingDoc;
+    const { familyId } = event.params;
+
+    try {
+      const stateRef = db.doc(`families/${familyId}/pingState/${ping.fromUid}_${ping.toUid}`);
+      const send = await db.runTransaction(async (tx) => {
+        const last = (await tx.get(stateRef)).data()?.at as Timestamp | undefined;
+        const now = Timestamp.now();
+        if (!shouldSendPing(last?.toMillis(), now.toMillis())) return false;
+        tx.set(stateRef, { at: now });
+        return true;
+      });
+      if (!send) {
+        logger.info("ping rate-limited", { familyId, fromUid: ping.fromUid, toUid: ping.toUid });
+        return;
+      }
+
+      const tokenSnap = await db.doc(`pushTokens/${ping.toUid}`).get();
+      const token = (tokenSnap.data() as PushTokenDoc | undefined)?.token;
+      if (!token) return; // recipient has notifications off / signed out
+
+      await sendToTokens([{ uid: ping.toUid, token }], {
+        title: `${ping.fromName} is asking where you are`,
+        body: "Tap to share your location.",
+        data: { type: "ping", uid: ping.fromUid, familyId },
+        priority: "10", // deliver now, but default sound and no time-sensitive level
+      });
+    } finally {
+      await snap.ref.delete();
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
 // onFamilyUpdated — housekeeping after a client-side leave
-//   * members empty            -> purge the family (doc, invite code, places, chat)
+//   * members empty            -> purge the family (doc, invite code, places, pings, chat)
 //   * creator no longer member -> promote members[0] to createdBy
 // Loop guard: purge deletes the doc (no further update events); promotion
 // re-triggers once, then createdBy is in members and nothing happens.

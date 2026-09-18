@@ -260,8 +260,8 @@ service cloud.firestore {
       );
 
       // Delete: server only. The last member leaving (members -> []) fires
-      // onFamilyUpdated, which purges the family, its invite code, places
-      // and chat.
+      // onFamilyUpdated, which purges the family, its invite code, places,
+      // pings and chat.
       allow delete: if false;
     }
 
@@ -289,6 +289,39 @@ service cloud.firestore {
         && validPlace(request.resource.data);
 
       allow delete: if signedIn() && isFamilyMember(familyId);
+    }
+
+    // ------------------------------------------------------------------
+    // families/{familyId}/pings/{pingId}   (Stage 10 — "Ask location")
+    //   { fromUid, fromName, toUid, createdAt }
+    // A member asks another member where they are. onPingCreated pushes the
+    // recipient and then deletes the doc, so a ping lives for a few seconds.
+    // Create only; never changed or removed by clients.
+    // ------------------------------------------------------------------
+    match /families/{familyId}/pings/{pingId} {
+      allow get, list: if signedIn() && isFamilyMember(familyId);
+
+      allow create: if signedIn()
+        && isFamilyMember(familyId)
+        && request.resource.data.keys().hasOnly(['fromUid', 'fromName', 'toUid', 'createdAt'])
+        && request.resource.data.keys().hasAll(['fromUid', 'fromName', 'toUid', 'createdAt'])
+        && request.resource.data.fromUid == uid()
+        && validName(request.resource.data.fromName)
+        && request.resource.data.toUid is string
+        && request.resource.data.toUid != uid()
+        && request.resource.data.toUid in get(familyPath(familyId)).data.members
+        && request.resource.data.createdAt == request.time;
+
+      allow update, delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // families/{familyId}/pingState/{fromUid_toUid}  ->  { at }   (Stage 10)
+    // onPingCreated's 60 s rate-limit bookkeeping (Admin SDK). No client
+    // access at all.
+    // ------------------------------------------------------------------
+    match /families/{familyId}/pingState/{id} {
+      allow read, write: if false;
     }
 
     // ------------------------------------------------------------------

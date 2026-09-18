@@ -11,7 +11,7 @@ extension Notification.Name {
 /// What a tapped push asks for (BACKEND-SETUP §5 "Push payloads"). The FCM `data` keys arrive at the
 /// top level of `userInfo`, as strings; any of them may be missing.
 struct PushRoute: Equatable {
-    /// "checkin" or "sos"; anything else just opens the Map tab.
+    /// "checkin", "sos" or "ping" (Stage 10 Ask location); anything else just opens the Map tab.
     let type: String?
     let uid: String?
     let familyId: String?
@@ -35,6 +35,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     @MainActor private var pendingPush: PushRoute?
     /// Stage 9: an SOS push shown as a banner while Pinny is open; AppState acknowledges it.
     @MainActor var onSOSPresented: (@MainActor (PushRoute) -> Void)?
+    /// Stage 10: an "Ask location" push shown as a banner while Pinny is active; AppState shares once.
+    @MainActor var onPingPresented: (@MainActor (PushRoute) -> Void)?
 
     func application(
         _ application: UIApplication,
@@ -94,19 +96,25 @@ extension AppDelegate: MessagingDelegate {
 // MARK: - UNUserNotificationCenterDelegate
 
 extension AppDelegate: UNUserNotificationCenterDelegate {
-    /// In the foreground: SOS as a banner with sound, check-in as a silent banner (§13.5).
+    /// In the foreground: SOS and Ask location as a banner with sound, check-in as a silent banner (§13.5).
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         let route = PushRoute(userInfo: notification.request.content.userInfo)
-        completionHandler(route.type == "sos" ? [.banner, .sound, .list] : [.banner, .list])
+        let withSound = route.type == "sos" || route.type == "ping"
+        completionHandler(withSound ? [.banner, .sound, .list] : [.banner, .list])
         // Stage 9: Pinny is open, so the user sees the banner and hears the siren: acknowledge.
-        guard route.type == "sos" else { return }
+        // Stage 10: Pinny is open, so an Ask location is answered at once.
+        guard withSound else { return }
         Task { @MainActor in
             guard UIApplication.shared.applicationState == .active else { return }
-            self.onSOSPresented?(route)
+            if route.type == "sos" {
+                self.onSOSPresented?(route)
+            } else {
+                self.onPingPresented?(route)
+            }
         }
     }
 

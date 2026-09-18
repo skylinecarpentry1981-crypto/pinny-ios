@@ -26,6 +26,7 @@ final class AppState: ObservableObject {
             if authState != oldValue {
                 applyPendingPushRoute()
                 applyPendingSOSAck()
+                applyPendingPingShare()
             }
         }
     }
@@ -83,6 +84,8 @@ final class AppState: ObservableObject {
     private var pendingPushRoute: PushRoute?
     /// A tapped SOS push whose ack waits for the session (Stage 9).
     private var pendingSOSAck: PushRoute?
+    /// An "Ask location" push whose one share waits for the session (Stage 10).
+    private var pendingPingShare: PushRoute?
     /// Between the push-token delete and Auth sign-out; no token is saved meanwhile.
     private var isSigningOut = false
     private var tokenRefreshObserver: AnyCancellable?
@@ -454,6 +457,29 @@ final class AppState: ObservableObject {
         currentUser?.notifyOnCheckIn = enabled
     }
 
+    // MARK: - Ask location (Stage 10)
+
+    /// Asks `member` to share where they are: one `pings` doc, the server sends them the push.
+    /// Offline is checked first and the write is a transaction, so nothing is queued for later.
+    /// Throws `FamilyError.network` offline, `AskLocationError` for anything else.
+    func askLocation(_ member: AppUser) async throws {
+        guard locationSync.isOnline else { throw FamilyError.network }
+        let firstName = member.firstName
+        guard let me = currentUser, let familyId = me.familyId, let toUid = member.id, toUid != me.id else {
+            throw AskLocationError(firstName: firstName)
+        }
+        let familyService = self.familyService
+        let fromName = me.name
+        do {
+            try await withTimeout(nanoseconds: Self.settingsTimeoutNanoseconds, timeoutError: FamilyError.unknown) {
+                try await familyService.askLocation(familyId: familyId, to: toUid, fromName: fromName)
+            }
+        } catch {
+            if FamilyError.from(error) == .network { throw FamilyError.network }
+            throw AskLocationError(firstName: firstName)
+        }
+    }
+
     /// Saves this phone's FCM token for the signed-in user. The service writes only while
     /// notifications are allowed and when pushTokens/{uid} is missing or holds another token.
     /// `token`: the one FCM just issued; nil uses the current one.
@@ -470,9 +496,11 @@ final class AppState: ObservableObject {
     /// A tapped push (DESIGN-SPEC §13.5): always the Map tab; for a check-in or SOS from someone in my
     /// family, also select them (MapView centres them and expands their drawer row). On a cold start
     /// the route waits until the session and the family's members have loaded.
+    /// An "Ask location" push (Stage 10): the Map tab and one manual share.
     func handlePush(_ route: PushRoute) {
         selectedTab = .map
         acknowledgeSOSPush(route)
+        sharePingLocation(route)
         guard route.type == "checkin" || route.type == "sos", route.uid != nil, route.familyId != nil else {
             pendingPushRoute = nil
             return
@@ -498,6 +526,35 @@ final class AppState: ObservableObject {
                   members.contains(where: { $0.id == uid }) else { return }
             selectedTab = .map
             focusMemberId = uid
+        }
+    }
+
+    // MARK: - Ask location push (Stage 10)
+
+    /// An "Ask location" push the user tapped, or saw as a banner while Pinny was active
+    /// (AppDelegate): share once, like Check in. Never switches tabs by itself.
+    func sharePingLocation(_ route: PushRoute) {
+        guard route.type == "ping", route.familyId != nil else { return }
+        pendingPingShare = route
+        applyPendingPingShare()
+    }
+
+    /// The share runs at once, or as soon as the session is ready (cold start from the push).
+    /// Location off: `share` does nothing and the Map's "Location is off" banner explains it.
+    private func applyPendingPingShare() {
+        guard let route = pendingPingShare else { return }
+        switch authState {
+        case .loading:
+            return
+        case .signedOut, .needsFamily:
+            pendingPingShare = nil
+        case .ready:
+            pendingPingShare = nil
+            guard route.familyId == currentUser?.familyId else { return }
+            let locationSync = self.locationSync
+            Task {
+                await locationSync.share(source: .manual)
+            }
         }
     }
 
