@@ -56,7 +56,7 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-        NSLocationWhenInUseUsageDescription: "$(APP_DISPLAY_NAME) shares your location with your family only when you open the app or tap Refresh. It never tracks you in the background."
+        NSLocationWhenInUseUsageDescription: "$(APP_DISPLAY_NAME) shares your location with your family only while the app is open: when you open it, tap Refresh or Check in, answer a family member who asks where you are, or send an SOS. It never tracks you in the background."
         UIBackgroundModes:
           - remote-notification
         ITSAppUsesNonExemptEncryption: false

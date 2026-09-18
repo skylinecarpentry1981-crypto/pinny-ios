@@ -98,3 +98,10 @@ Contract: [STAGE-8-CONTRACT.md](STAGE-8-CONTRACT.md).
 - APNs auth key → Firebase Cloud Messaging (no pushes arrive until this is done)
 - App Store: screenshots, App Privacy questionnaire, attach build + Family Pass, submit
 - External TestFlight: build 105 waiting for Beta App Review; public link https://testflight.apple.com/join/WauYUQ7f
+
+## Stage 9 — SOS keeps alerting until acknowledged (done)
+- [x] 29 s siren, reminders every 30 s for up to 5 min via Cloud Tasks, acks per receiver; Overseer PASS; verified on device: SOS push + siren delivered (APNs key QP297H2M7B uploaded 2026-09-18)
+
+## Stage 10 — Ask location (done)
+- [x] Drawer action "Ask location" → push "{name} is asking where you are" → tap shares once; 60 s rate limit client + server; Overseer PASS
+- Nits kept for later: retry a ping share that lost the race; expire `pingState` docs; 44 pt hit height on row action buttons; icon-only action row at default text size
