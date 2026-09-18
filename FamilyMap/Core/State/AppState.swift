@@ -66,6 +66,7 @@ final class AppState: ObservableObject {
     private var observedUid: String?
     private var observedFamilyId: String?
     private var isCreatingUserDoc = false
+    private var isSeedingProviderPhoto = false
     /// True between "family created" and "Continue" so onboarding can show the invite code first.
     private var holdOnboarding = false
 
@@ -182,12 +183,35 @@ final class AppState: ObservableObject {
         switch event {
         case .failure(let error):
             sessionError = error.userMessage
-        case .user(nil, _):
+        case .user(nil, _, _):
             createUserDocIfNeeded(uid: uid)
-        case .user(let user?, let hasPendingWrites):
+        case .user(let user?, let hasPendingWrites, let isFromCache):
             currentUser = user
             sessionError = nil
             resolveState(startListeners: !hasPendingWrites)
+            if !isFromCache, !hasPendingWrites, user.photoURL == nil {
+                seedProviderPhotoIfNeeded(uid: uid)
+            }
+        }
+    }
+
+    /// Backfill for user docs created before Stage 8: copy the Google picture into `photoURL` once.
+    /// Only after a server snapshot with no photo, and never again for a uid once the flag is set
+    /// (after this seed, or after the user uploads or removes a photo themselves).
+    private func seedProviderPhotoIfNeeded(uid: String) {
+        guard !isSeedingProviderPhoto,
+              !PhotoService.didSeedProviderPhoto(uid: uid),
+              let url = authService.providerPhotoURL else { return }
+        isSeedingProviderPhoto = true
+        let familyService = self.familyService
+        Task {
+            defer { isSeedingProviderPhoto = false }
+            do {
+                try await familyService.updatePhotoURL(userId: uid, url: url)
+                PhotoService.markProviderPhotoSeeded(uid: uid)
+            } catch {
+                // Best effort; the next server snapshot without a photo retries.
+            }
         }
     }
 

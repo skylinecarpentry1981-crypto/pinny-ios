@@ -58,8 +58,9 @@ struct LocationShare {
 
 /// One event from the `users/{uid}` listener.
 enum UserSnapshotEvent {
-    /// `nil` user means the document does not exist (yet).
-    case user(AppUser?, hasPendingWrites: Bool)
+    /// `nil` user means the document does not exist (yet). `isFromCache` is true until the server
+    /// has confirmed the snapshot.
+    case user(AppUser?, hasPendingWrites: Bool, isFromCache: Bool)
     case failure(Error)
 }
 
@@ -106,16 +107,17 @@ final class FirebaseFamilyService: FamilyService {
             }
             guard let snapshot else { return }
             let pending = snapshot.metadata.hasPendingWrites
+            let fromCache = snapshot.metadata.isFromCache
             guard snapshot.exists else {
                 // A cache miss is not proof the doc is absent; wait for the server before creating it.
-                if !snapshot.metadata.isFromCache {
-                    onChange(.user(nil, hasPendingWrites: pending))
+                if !fromCache {
+                    onChange(.user(nil, hasPendingWrites: pending, isFromCache: fromCache))
                 }
                 return
             }
             do {
                 let user = try snapshot.data(as: AppUser.self)
-                onChange(.user(user, hasPendingWrites: pending))
+                onChange(.user(user, hasPendingWrites: pending, isFromCache: fromCache))
             } catch {
                 onChange(.failure(error))
             }

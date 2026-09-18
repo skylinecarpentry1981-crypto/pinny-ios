@@ -26,6 +26,22 @@ final class PhotoService: ObservableObject {
         self.familyService = familyService
     }
 
+    // MARK: - Provider photo seed flag
+
+    /// Once per uid: the Google picture is copied into `photoURL` only until the user has set or
+    /// removed a photo themselves, so a removed photo never comes back on the next launch.
+    static func didSeedProviderPhoto(uid: String) -> Bool {
+        UserDefaults.standard.bool(forKey: seedKey(uid: uid))
+    }
+
+    static func markProviderPhotoSeeded(uid: String) {
+        UserDefaults.standard.set(true, forKey: seedKey(uid: uid))
+    }
+
+    private static func seedKey(uid: String) -> String {
+        "didSeedProviderPhoto.\(uid)"
+    }
+
     /// Computed so `Storage.storage()` is never called before `FirebaseApp.configure()`.
     private func avatarRef(uid: String) -> StorageReference {
         let storage = Storage.storage()
@@ -57,6 +73,7 @@ final class PhotoService: ObservableObject {
             _ = try await ref.putDataAsync(jpeg, metadata: metadata)
             let url = try await ref.downloadURL()
             try await familyService.updatePhotoURL(userId: uid, url: url.absoluteString)
+            Self.markProviderPhotoSeeded(uid: uid)
             state = .idle
         } catch {
             state = .failed(Self.message(for: error))
@@ -78,6 +95,7 @@ final class PhotoService: ObservableObject {
                 guard Self.isObjectNotFound(error) else { throw error }
             }
             try await familyService.updatePhotoURL(userId: uid, url: nil)
+            Self.markProviderPhotoSeeded(uid: uid)
             state = .idle
         } catch {
             state = .failed(Self.message(for: error))

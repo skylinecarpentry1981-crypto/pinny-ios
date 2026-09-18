@@ -85,6 +85,9 @@ protocol AuthService: AnyObject {
     /// Google profile picture to seed `users/{uid}.photoURL` with on first sign-in (Stage 8).
     /// Nil for Apple / email. Read only when the user doc is created, never to overwrite a photo.
     var currentPhotoURL: String? { get }
+    /// Google picture from the Firebase Auth record (present at every launch, not only at sign-in).
+    /// Backfills `photoURL` for user docs created before Stage 8. Nil for Apple / email.
+    var providerPhotoURL: String? { get }
     var currentProvider: AuthProvider { get }
 
     /// Calls `onChange` immediately with the current uid and again on every change.
@@ -125,6 +128,15 @@ final class FirebaseAuthService: AuthService {
 
     var currentPhotoURL: String? {
         pendingPhotoURL
+    }
+
+    var providerPhotoURL: String? {
+        guard let user = Auth.auth().currentUser else { return nil }
+        let google = user.providerData.first { $0.providerID == "google.com" }?.photoURL
+        guard let url = (google ?? user.photoURL)?.absoluteString, !url.isEmpty else { return nil }
+        // Google's default is a 96 px thumbnail; ask for the 512 px one the avatar was designed for.
+        let sized = url.replacingOccurrences(of: "=s96-c", with: "=s512-c")
+        return sized.count <= 2048 ? sized : nil
     }
 
     var currentProvider: AuthProvider {
