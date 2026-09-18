@@ -285,7 +285,7 @@ Hardcoding `production` would break Debug signing, so it isn't done.
 | H4 | App Store Server Notifications URL (Sandbox + Production, V2) → send test notification; Claude checks the log | Owner → Claude | To do |
 | H5 | Give Claude the numeric Apple ID → `APP_APPLE_ID` in `functions/.env` → redeploy functions | Owner → Claude | To do |
 | H6 | Sandbox test in TestFlight: buy, restore, refund | Owner | To do |
-| H7 | Small Business Program enrolment | Owner | To do |
+| H7 | Small Business Program enrolment | Owner | Done (already enrolled) |
 | H8 | Pricing and Availability: Free app, all countries | Owner | To do |
 | H9 | Demo account buys the pass in the sandbox; review notes updated | Owner | To do |
 | H10 | Deploy Stage 7 rules + functions + hosting (privacy page) — before H4/H6 | Claude, after owner OK | To do |
