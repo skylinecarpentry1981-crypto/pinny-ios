@@ -279,7 +279,7 @@ Hardcoding `production` would break Debug signing, so it isn't done.
 | 14 | First external build → Beta App Review → family installs (Path A: add the build to "Family", D4) | Owner | To do |
 | 15 | New build before the 90-day expiry | Owner / Claude | Ongoing |
 | H0 | Stage 7 backend: rules (`pass`, `passes`, family create gate), `redeemFamilyPass`, `appStoreNotifications`, Apple root certs, tests | Claude | Done |
-| H1 | Paid Apps Agreement: agree, bank account, tax forms, contact info → status Active | Owner (Account Holder) | To do |
+| H1 | Paid Apps Agreement: agree, bank account, tax forms, contact info → status Active | Owner (Account Holder) | Done (already active from earlier apps) |
 | H2 | Create the non-consumable IAP `com.skyline.pinny.familypass` (price A$14.99, localisation, review screenshot) | Owner | To do |
 | H3 | Attach the IAP to the first App Store version | Owner | To do |
 | H4 | App Store Server Notifications URL (Sandbox + Production, V2) → send test notification; Claude checks the log | Owner → Claude | To do |
