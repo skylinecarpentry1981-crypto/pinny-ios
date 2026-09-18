@@ -41,3 +41,7 @@ https://developer.apple.com/contact/request/notifications-critical-alerts-entitl
 3. Client: add `.criticalAlert` to `requestAuthorization(options:)` in `FirebaseNotificationService`.
 4. Server: set the Functions env `CRITICAL_ALERTS_ENABLED=true` (the SOS payload then uses `sound: { critical: 1, name: "sos.wav", volume: 1.0 }`).
 5. New build → TestFlight; test with the mute switch on.
+
+## 4. Status
+
+- 2026-09-18: request submitted by Claude on the owner's instruction. Apple Request ID **HBRVCF33Z9**. Apple replies by email to the Account Holder.
