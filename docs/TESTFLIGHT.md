@@ -270,7 +270,7 @@ Hardcoding `production` would break Debug signing, so it isn't done.
 | 5 | A1–A4 App ID + APNs / SIWA keys | Owner | To do |
 | 6 | A5–A7 App Store Connect app, Apple ID, API key | Owner | To do |
 | 7 | B1–B6 Firebase project, auth, APNs, Blaze | Owner | To do |
-| 8 | B7 support email → fill `SUPPORT_EMAIL` | Owner → Claude | To do |
+| 8 | B7 support email → fill `SUPPORT_EMAIL` | Owner → Claude | Done (tony810704@hotmail.com; hosting deployed) |
 | 9 | Functions runtime → `nodejs22` | Claude | Done |
 | 10 | B8 deploy rules, functions, hosting (`firebase deploy --only …,hosting`) | Claude, after owner OK | To do |
 | 11 | Path B only: C1–C5 GitHub + Codemagic key, certificate, profile, plist secret | Owner | Not needed for Path A |
