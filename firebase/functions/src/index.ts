@@ -169,7 +169,7 @@ async function sendToTokens(recipients: Recipient[], content: PushContent): Prom
       },
       payload: {
         aps: {
-          // SOS plays the bundled 12 s siren (FamilyMap/Resources/sos.wav); everything else the default sound.
+          // SOS plays the bundled 29 s siren (FamilyMap/Resources/sos.wav); everything else the default sound.
           sound: content.urgent
             ? process.env.CRITICAL_ALERTS_ENABLED === "true"
               ? { critical: true, name: "sos.wav", volume: 1.0 } // needs Apple's Critical Alerts entitlement
@@ -323,7 +323,12 @@ export const onSOSMessage = onDocumentCreated(
     // Everyone in the family, regardless of notifyOnCheckIn.
     const recipients = await familyRecipients(familyId, msg.senderId);
 
-    await sendToTokens(recipients, sosContent(familyId, messageId, msg, sender));
+    try {
+      await sendToTokens(recipients, sosContent(familyId, messageId, msg, sender));
+    } catch (err) {
+      // A failed first push must not cancel the reminders: they are the second chance.
+      logger.warn("first sos push failed", { familyId, messageId, err: String(err) });
+    }
 
     // Stage 9: keep alerting until each receiver acknowledges.
     if (shouldContinue(0, recipients.length)) {
@@ -436,16 +441,26 @@ export const sosReminder = onTaskDispatched<SOSReminderTask>(
     const { familyId, messageId, senderUid, attempt } = req.data;
 
     const msgRef = db.doc(`chats/${familyId}/messages/${messageId}`);
-    const [msgSnap, acksSnap, senderSnap] = await Promise.all([
-      msgRef.get(),
-      msgRef.collection("acks").get(),
-      db.doc(`users/${senderUid}`).get(),
-    ]);
+    let msgSnap, acksSnap, senderSnap, withToken;
+    try {
+      [msgSnap, acksSnap, senderSnap, withToken] = await Promise.all([
+        msgRef.get(),
+        msgRef.collection("acks").get(),
+        db.doc(`users/${senderUid}`).get(),
+        // Current members with a push token, minus the sender.
+        familyRecipients(familyId, senderUid),
+      ]);
+    } catch (err) {
+      // No task retries: a transient read failure skips this attempt but keeps the (bounded) chain alive.
+      logger.warn("sos reminder read failed", { familyId, messageId, attempt, err: String(err) });
+      if (shouldContinue(attempt, 1)) {
+        await enqueueSOSReminder({ familyId, messageId, senderUid, attempt: attempt + 1 });
+      }
+      return;
+    }
     const msg = msgSnap.data() as MessageDoc | undefined;
     if (!msg || msg.type !== "sos") return; // message gone (family purged): stop
 
-    // Current members with a push token, minus the sender, minus the acked.
-    const withToken = await familyRecipients(familyId, senderUid);
     const remaining = new Set(
       remainingRecipients(withToken.map((r) => r.uid), senderUid, acksSnap.docs.map((d) => d.id)),
     );
