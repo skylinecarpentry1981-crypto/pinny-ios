@@ -28,6 +28,9 @@ struct AvatarView: View {
             }
         }
         .frame(width: size, height: size)
+        // Opaque base: the drawer row and map pin draw a solid ring circle behind the avatar, which
+        // would otherwise show through the translucent initials tint (accent on accent = no initials).
+        .background(Color.fm.background)
         .clipShape(Circle())
         .accessibilityLabel(name)
     }

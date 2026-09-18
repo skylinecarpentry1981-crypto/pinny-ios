@@ -14,7 +14,9 @@ extension Color {
         static let background = Color(uiColor: .systemBackground)
         static let surface = Color(uiColor: .secondarySystemBackground)
         static let textPrimary = Color.primary
-        static let textSecondary = Color.secondary
+        /// Explicit UIKit colour, not `Color.secondary`: over a material background SwiftUI renders
+        /// `.secondary` as a vibrant blend, which disappears inside the drawer's ScrollView.
+        static let textSecondary = Color(uiColor: .secondaryLabel)
         static let stale = Color(uiColor: .systemGray3)
     }
 }
