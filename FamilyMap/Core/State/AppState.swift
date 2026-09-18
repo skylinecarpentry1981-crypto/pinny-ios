@@ -90,7 +90,7 @@ final class AppState: ObservableObject {
         locationService: LocationService = LocationService(),
         chatService: ChatService = FirestoreChatService(),
         notificationService: NotificationService = FirebaseNotificationService(),
-        passService: PassService = PassService()
+        passService: PassService? = nil   // default built inside the @MainActor init (PassService is main-actor isolated)
     ) {
         self.authService = authService
         self.familyService = familyService
@@ -99,7 +99,7 @@ final class AppState: ObservableObject {
         self.locationSync = LocationSync(locationService: locationService, familyService: familyService)
         self.chatService = chatService
         self.notificationService = notificationService
-        self.passService = passService
+        self.passService = passService ?? PassService()
         locationSync.sharingUserId = { [weak self] in
             guard let self, self.authState == .ready else { return nil }
             return self.currentUser?.id
