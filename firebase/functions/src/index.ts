@@ -149,7 +149,11 @@ async function sendToTokens(recipients: Recipient[], content: PushContent): Prom
       payload: {
         aps: {
           // SOS plays the bundled 12 s siren (FamilyMap/Resources/sos.wav); everything else the default sound.
-          sound: content.urgent ? "sos.wav" : "default",
+          sound: content.urgent
+            ? process.env.CRITICAL_ALERTS_ENABLED === "true"
+              ? { critical: true, name: "sos.wav", volume: 1.0 } // needs Apple's Critical Alerts entitlement
+              : "sos.wav"
+            : "default",
           ...(content.urgent ? { "interruption-level": "time-sensitive" } : {}),
         },
       },
