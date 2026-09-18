@@ -28,6 +28,10 @@ struct ChatView: View {
             VStack(spacing: 0) {
                 banner
                 content(proxy)
+                    // Tapping the thread (or the empty state) hides the keyboard. Simultaneous, so
+                    // bubble taps, context menus, "Load earlier" and "Show on map" keep working.
+                    .contentShape(Rectangle())
+                    .simultaneousGesture(TapGesture().onEnded { inputFocused = false })
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 inputBar(proxy)
@@ -282,6 +286,17 @@ struct ChatView: View {
                 .lineLimit(1...5)
                 .font(.body)
                 .focused($inputFocused)
+                .toolbar {
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button {
+                            inputFocused = false
+                        } label: {
+                            Image(systemName: "keyboard.chevron.compact.down")
+                        }
+                        .accessibilityLabel("Hide keyboard")
+                    }
+                }
                 .padding(.horizontal, FMSpacing.md)
                 .padding(.vertical, FMSpacing.sm)
                 .background(

@@ -41,6 +41,75 @@ private enum MapAnnotationItem: Identifiable {
     }
 }
 
+/// Screen-space de-overlap for member pins: pins that would sit closer than `threshold` points at the
+/// current zoom are spread evenly on a small circle around their shared centre. Coordinates never
+/// change; each pin's view is offset inside its annotation.
+enum PinSpread {
+    /// Pin diameter (40 pt avatar + 2 pt ring each side).
+    static let threshold: Double = 44
+
+    /// View offset per member id. Members that stand alone are absent (no offset).
+    static func offsets(for pins: [MemberPin], region: MKCoordinateRegion, mapSize: CGSize) -> [String: CGSize] {
+        let width = Double(mapSize.width)
+        let height = Double(mapSize.height)
+        guard pins.count > 1, width > 1, height > 1,
+              region.span.longitudeDelta > 0, region.span.latitudeDelta > 0 else { return [:] }
+
+        // Points per degree of longitude. Mercator: near latitude L a degree of latitude is drawn
+        // 1/cos(L) taller. The smaller scale wins, as MapKit fits both spans into the frame.
+        let cosCentre = max(cos(region.center.latitude * .pi / 180), 0.01)
+        let pointsPerDegree = min(width / region.span.longitudeDelta, height / region.span.latitudeDelta * cosCentre)
+
+        /// Screen vector from `origin` to `coordinate` (y grows downwards).
+        func screenVector(from origin: CLLocationCoordinate2D, to coordinate: CLLocationCoordinate2D) -> (x: Double, y: Double) {
+            let cosLat = max(cos((origin.latitude + coordinate.latitude) / 2 * .pi / 180), 0.01)
+            return (
+                (coordinate.longitude - origin.longitude) * pointsPerDegree,
+                (origin.latitude - coordinate.latitude) * pointsPerDegree / cosLat
+            )
+        }
+
+        // Stable order by uid, so pins keep their seat on the circle between renders.
+        let sorted = pins.sorted { $0.id < $1.id }
+        // Single-linkage groups: pins chained together by near neighbours share one label in `group`.
+        var group = Array(sorted.indices)
+        for i in sorted.indices {
+            for j in sorted.indices where j > i && group[j] != group[i] {
+                let vector = screenVector(from: sorted[i].coordinate, to: sorted[j].coordinate)
+                guard hypot(vector.x, vector.y) < threshold else { continue }
+                let from = group[j]
+                let to = group[i]
+                for k in group.indices where group[k] == from {
+                    group[k] = to
+                }
+            }
+        }
+
+        var offsets: [String: CGSize] = [:]
+        for label in Set(group) {
+            let members = sorted.indices.filter { group[$0] == label }.map { sorted[$0] }
+            let count = members.count
+            guard count > 1 else { continue }
+            let centre = CLLocationCoordinate2D(
+                latitude: members.map(\.coordinate.latitude).reduce(0, +) / Double(count),
+                longitude: members.map(\.coordinate.longitude).reduce(0, +) / Double(count)
+            )
+            let radius = count <= 3 ? 26.0 : min(22.0 + 6.0 * Double(count), 60.0)
+            // Two pins sit side by side; three or more start at the top and go clockwise.
+            let startAngle = count == 2 ? Double.pi : -Double.pi / 2
+            for (seat, pin) in members.enumerated() {
+                let angle = startAngle + 2 * Double.pi * Double(seat) / Double(count)
+                let own = screenVector(from: centre, to: pin.coordinate)
+                offsets[pin.id] = CGSize(
+                    width: radius * cos(angle) - own.x,
+                    height: radius * sin(angle) - own.y
+                )
+            }
+        }
+        return offsets
+    }
+}
+
 /// The map's frame and how much of its top is covered by the top stack (pill, status, banner).
 /// Fits and centring aim at the strip between the top stack and the drawer.
 struct MapViewport {
@@ -364,29 +433,42 @@ private struct MapHome: View {
     // MARK: - Map
 
     /// Relative times and staleness on the pins re-render every minute.
+    /// The region is published, so this body already re-runs on every zoom and pan step; the pin
+    /// spread is worked out here from the live region (a handful of members, so it costs nothing).
     private var mapLayer: some View {
         TimelineView(.periodic(from: .now, by: 60)) { _ in
+            let spread = PinSpread.offsets(
+                for: pins,
+                region: viewModel.region,
+                mapSize: viewport(for: drawerSnap).size
+            )
             Map(
                 coordinateRegion: $viewModel.region,
                 showsUserLocation: false,
                 annotationItems: mapItems
             ) { item in
                 MapAnnotation(coordinate: item.coordinate) {
-                    annotationView(for: item)
+                    annotationView(for: item, spread: spread)
                 }
             }
         }
     }
 
     @ViewBuilder
-    private func annotationView(for item: MapAnnotationItem) -> some View {
+    private func annotationView(for item: MapAnnotationItem, spread: [String: CGSize]) -> some View {
         switch item {
         case .place(let place):
             PlaceAnnotationView(place: place)
         case .member(let pin):
+            let offset = spread[pin.id] ?? .zero
             MemberPinView(member: pin.member, point: pin.point, isMe: pin.isMe, isSelected: pin.isSelected) {
                 selectFromPin(pin.id)
             }
+            // The whole tappable pin (avatar + name) moves. The matching padding grows the annotation
+            // symmetrically around the coordinate, so the moved pin stays inside its hit-test bounds.
+            .offset(offset)
+            .padding(.horizontal, abs(offset.width))
+            .padding(.vertical, abs(offset.height))
         }
     }
 
