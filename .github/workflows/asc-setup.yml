@@ -16,6 +16,14 @@
 #   gh workflow run asc-setup.yml -R skylinecarpentry1981-crypto/pinny-ios -f command=family-link \
 #     -f contact_phone=+61400000000 -f contact_first_name=Tony -f contact_last_name=Kim
 #
+# listing: fills the App Store listing of the version in Prepare for Submission
+# (docs/TESTFLIGHT.md G, texts from docs/APP-STORE-LISTING.md): categories, subtitle,
+# privacy/support URLs, age rating, description, keywords, promotional text, copyright,
+# manual release, App Review contact + notes. Never submits, attaches a build, or touches
+# pricing, availability or screenshots.
+#
+#   gh workflow run asc-setup.yml -R skylinecarpentry1981-crypto/pinny-ios -f command=listing -f contact_phone=+61400000000
+#
 # Script: scripts/asc_setup.py. Secrets: ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8.
 
 name: App Store Connect setup
@@ -29,12 +37,12 @@ on:
         required: false
         default: ""
       command:
-        description: "setup (default), status (read-only: builds, testers, in-app purchases) or family-link (external TestFlight group + review submission)"
+        description: "setup (default), status (read-only: builds, testers, in-app purchases), family-link (external TestFlight group + review submission) or listing (App Store listing texts; no submission)"
         type: choice
-        options: [setup, status, family-link, invite-user]
+        options: [setup, status, family-link, invite-user, listing]
         default: setup
       contact_phone:
-        description: "family-link: Beta App Review contact phone, e.g. +61400000000 (needed once; never printed)"
+        description: "family-link / listing: review contact phone, e.g. +61400000000 (needed once; never printed)"
         type: string
         required: false
         default: ""
@@ -105,6 +113,8 @@ jobs:
               --contact-first-name "$CONTACT_FIRST_NAME" \
               --contact-last-name "$CONTACT_LAST_NAME" \
               --build "$BUILD_VERSION"
+          elif [ "$ASC_COMMAND" = "listing" ]; then
+            python scripts/asc_setup.py listing --contact-phone "$CONTACT_PHONE"
           else
             python scripts/asc_setup.py setup --tester-email "$TESTER_EMAIL"
           fi

@@ -314,6 +314,12 @@ The manual equivalents, for reference:
 
 This isn't needed for TestFlight. To go public, add the following in App Store Connect → the app's version page:
 
+Claude fills items 1, 3, 4 and 6 (URLs, texts, categories, age rating, copyright, manual release, App Review contact + notes; texts from [APP-STORE-LISTING.md](APP-STORE-LISTING.md)) with one run — safe to repeat, the phone is needed once and is never printed. It never submits, attaches a build, or touches pricing, availability or screenshots; those, the App Privacy answers (5) and **Add for Review** (8) stay manual:
+
+```
+gh workflow run asc-setup.yml -R skylinecarpentry1981-crypto/pinny-ios -f command=listing -f contact_phone=+61400000000
+```
+
 1. **Privacy Policy URL** and **Support URL**: the two Hosting pages (B8).
 2. **Screenshots**: iPhone **6.9"** and **6.5"** sets. Without a Mac, take them on a family member's Pro Max-size iPhone running the TestFlight build, using the demo family (no real locations).
 3. **Description, keywords, subtitle** and a category.

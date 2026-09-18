@@ -37,3 +37,7 @@ firebase/.firebase/
 
 # Owner-only setup script (names the App Store Connect key)
 owner-setup.ps1
+
+# Python
+__pycache__/
+*.pyc

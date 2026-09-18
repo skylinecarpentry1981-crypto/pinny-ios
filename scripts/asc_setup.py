@@ -18,6 +18,14 @@ ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8 (full .p8 text). Never prints them.
       What to Test text, export compliance, the Family group and a Beta App
       Review submission. Prints the public link. Safe to run again.
 
+  listing [--contact-phone N]
+      App Store listing for the version in Prepare for Submission, from
+      docs/APP-STORE-LISTING.md: categories, subtitle, privacy policy URL, age
+      rating answers, description, keywords, promotional text, support URL,
+      copyright, manual release, App Review contact + notes. Only writes fields
+      that differ. Never submits, attaches a build, or touches pricing,
+      availability or screenshots. Safe to run again.
+
   revoke-runner-certs
       CI clean-up. `xcodebuild archive -allowProvisioningUpdates` on a fresh
       runner creates a new Apple Development certificate whose private key only
@@ -618,6 +626,341 @@ def cmd_setup(args):
     return 0 if ok else 1
 
 
+# -------------------------------------------------------------- listing ----
+# App Store listing for version 1.0 (docs/APP-STORE-LISTING.md, docs/TESTFLIGHT.md G).
+# Read-then-patch: only fields that differ are written. Never submits for review,
+# never attaches a build, never touches pricing, availability or screenshots.
+# Endpoints: https://developer.apple.com/documentation/appstoreconnectapi
+#   GET /v1/apps/{id}/appInfos (include=primaryCategory,secondaryCategory), PATCH /v1/appInfos/{id},
+#   GET /v1/appCategories (ids are names such as SOCIAL_NETWORKING, UTILITIES),
+#   GET /v1/appInfos/{id}/appInfoLocalizations, PATCH /v1/appInfoLocalizations/{id},
+#   GET /v1/apps/{id}/appStoreVersions (filter[platform]), PATCH /v1/appStoreVersions/{id},
+#   GET /v1/appStoreVersions/{id}/appStoreVersionLocalizations, PATCH /v1/appStoreVersionLocalizations/{id},
+#   GET /v1/appStoreVersions/{id}/appStoreReviewDetail, POST /v1/appStoreReviewDetails,
+#   PATCH /v1/appStoreReviewDetails/{id},
+#   GET /v1/appInfos/{id}/ageRatingDeclaration, PATCH /v1/ageRatingDeclarations/{id}.
+
+SUPPORT_URL = "https://pinny-family-4vea.web.app/support"
+PRIMARY_CATEGORY = "SOCIAL_NETWORKING"
+SECONDARY_CATEGORY = "UTILITIES"
+SUBTITLE = "Family map, SOS and chat"
+COPYRIGHT = "2026 Jinho Lee"
+REVIEW_FIRST_NAME = "Jinho"
+REVIEW_LAST_NAME = "Lee"
+PROMO_TEXT = (
+    "See where your family is the moment they open Pinny, hold to send an SOS, and chat in one "
+    "private place. No background tracking, ever."
+)
+KEYWORDS = "locator,location,sharing,find,kids,parents,teens,safety,places,checkin,emergency,GPS,circle,tracker"
+DESCRIPTION = """\
+Pinny is a private map for your family. Open the app and you see everyone who has shared their location — with the time they shared it and how much battery they have left. That's it. No feeds, no strangers, no ads.
+
+HOW PINNY SHARES LOCATION
+Pinny shares your location with your family only when you open the app, tap Refresh or Check in, or send an SOS. It never tracks you in the background, and it never shares with anyone outside your family. Everyone can see exactly what is shared, right on the map.
+
+SOS
+One big red button on the map. Hold it for a moment and everyone in your family gets an alert with your location. The alert can't be muted, and straight after there's a call button that shows your region's emergency number.
+
+FAMILY CHAT
+A simple group chat for your family only. Messages stay inside your family.
+
+PLACES
+Save Home, School, Work or Grandma's. When someone checks in from a saved place, the alert says where — "At School" — instead of a street address.
+
+MEMBER DRAWER
+Swipe up from the map to see everyone at a glance: who's where, when they last shared, and their battery level. Tap a name to open directions in Maps, message them or check in. Add a photo so family can spot you at a glance.
+
+FAMILY PASS
+Creating a family needs a Family Pass — a one-time purchase, tied to your Apple ID. Only the person who creates the family needs it. Everyone else joins free with the family's invite code, and there's no limit on how many people can join.
+
+PRIVACY
+• Location is shared only when you open Pinny, tap Refresh or Check in, or send an SOS.
+• No background tracking, no location history, no selling of data.
+• Sign in with Apple, Google or email.
+• Delete your account and your location data from inside the app at any time.
+
+Pinny is made for one family per account: parents, kids with their own phones, grandparents, housemates — anyone you'd want to find in a hurry."""
+STORE_WHATS_NEW = """\
+Welcome to Pinny — a private map for your family.
+• See your family on one map, shared only when they open the app
+• SOS: hold one button and everyone is alerted with your location
+• Family chat and saved Places like Home and School
+• Family Pass: one purchase to create your family; everyone else joins free"""
+APP_REVIEW_NOTES = """\
+NO DEMO ACCOUNT NEEDED: sign in with your own Apple or Google account (or sign up with email).
+
+LOCATION: Pinny reads location only while the app is open — on launch, when the user taps Refresh or Check in, or when sending an SOS. There is no background location, no significant-change monitoring and no location history. The permission is "When In Use" only.
+
+FAMILY PASS (in-app purchase, non-consumable): only creating a family requires it. Tap "Create family" to see the paywall; in the sandbox the purchase is free. "Restore purchases" is on the paywall and in Settings > Family Pass.
+
+JOINING IS FREE: a second account can join the family with its invite code, with no purchase.
+
+SOS: after an SOS is sent, a call button shows your region's emergency number (taken from the device region: 911 in the US, 000 in Australia, 999 in the UK, 112 elsewhere) and opens the phone dialler; nothing is dialled without the system confirmation. Sending an SOS only posts a message and a push to your own family.
+
+ACCOUNT DELETION: Settings > Delete account (Guideline 5.1.1(v)).
+Sign in with Apple is offered alongside Google and email (Guideline 4.8)."""
+
+# docs/APP-STORE-LISTING.md section 3. Attribute names: AgeRatingDeclarationUpdateRequest (2025 questionnaire).
+# Family chat is declared (messagingAndChat / userGeneratedContent); everything else is None / No.
+# kidsAgeBand and the rating overrides are left alone.
+AGE_RATING = {
+    "alcoholTobaccoOrDrugUseOrReferences": "NONE",
+    "contests": "NONE",
+    "gamblingSimulated": "NONE",
+    "gunsOrOtherWeapons": "NONE",
+    "medicalOrTreatmentInformation": "NONE",
+    "profanityOrCrudeHumor": "NONE",
+    "sexualContentGraphicAndNudity": "NONE",
+    "sexualContentOrNudity": "NONE",
+    "horrorOrFearThemes": "NONE",
+    "matureOrSuggestiveThemes": "NONE",
+    "violenceCartoonOrFantasy": "NONE",
+    "violenceRealisticProlongedGraphicOrSadistic": "NONE",
+    "violenceRealistic": "NONE",
+    "advertising": False,
+    "ageAssurance": False,
+    "gambling": False,
+    "healthOrWellnessTopics": False,
+    "lootBox": False,
+    "parentalControls": False,
+    "socialMedia": False,
+    "socialMediaAgeRestricted": False,
+    "unrestrictedWebAccess": False,
+    "messagingAndChat": True,
+    "userGeneratedContent": True,
+}
+
+LISTING_MANUAL = [
+    "Screenshots: iPhone 6.9\" and 6.5\" sets (docs/APP-STORE-LISTING.md section 6)",
+    "App Privacy questionnaire (docs/TESTFLIGHT.md G5 table)",
+    "Pricing: Free; Availability: all countries or regions (docs/TESTFLIGHT.md H8)",
+    "Version page: pick a build and add the Family Pass in-app purchase (docs/TESTFLIGHT.md H3)",
+    "Add for Review / Submit (release is manual after approval)",
+]
+
+
+def patch_changed(c, rtype, res, wanted, label):
+    """PATCH only the attributes that differ. Prints field names, never values. Returns the changed names."""
+    diff = {k: v for k, v in wanted.items() if res["attributes"].get(k) != v}
+    if not diff:
+        print(f"{label}: already up to date")
+        return []
+    c.request("PATCH", f"/v1/{rtype}/{res['id']}",
+              body={"data": {"type": rtype, "id": res["id"], "attributes": diff}})
+    print(f"{label}: updated {', '.join(diff)}")
+    return list(diff)
+
+
+def pick_listing_locale(items, primary_locale):
+    """en-AU, en-US, the app's primary locale, then whatever exists. Never creates a second locale."""
+    return (pick_locale(items)
+            or next((x for x in items if x["attributes"].get("locale") == primary_locale), None)
+            or (items[0] if items else None))
+
+
+def summarise(changed):
+    return ("updated " + ", ".join(changed)) if changed else "already up to date"
+
+
+def listing_app_info(c, app_id):
+    """The editable appInfo (PREPARE_FOR_SUBMISSION, else the only one) with its category ids."""
+    page = c.request("GET", f"/v1/apps/{app_id}/appInfos", params={"include": "primaryCategory,secondaryCategory"})
+    infos = page.get("data", [])
+    info = next((i for i in infos if (i["attributes"].get("state") or i["attributes"].get("appStoreState"))
+                 == "PREPARE_FOR_SUBMISSION"), None)
+    if not info and len(infos) == 1:
+        info = infos[0]
+    if not info:
+        states = ", ".join(str(i["attributes"].get("state")) for i in infos) or "none"
+        raise ApiError(0, [{"code": "NO_EDITABLE_APP_INFO", "detail": f"no editable app info (states: {states})"}])
+    return info
+
+
+def ensure_categories(c, info):
+    rels = info.get("relationships", {})
+    wanted = {"primaryCategory": PRIMARY_CATEGORY, "secondaryCategory": SECONDARY_CATEGORY}
+    diff = {k: v for k, v in wanted.items() if ((rels.get(k) or {}).get("data") or {}).get("id") != v}
+    if not diff:
+        print(f"Categories: already {PRIMARY_CATEGORY} / {SECONDARY_CATEGORY}")
+        return "already set"
+    c.request("PATCH", f"/v1/appInfos/{info['id']}", body={"data": {
+        "type": "appInfos", "id": info["id"],
+        "relationships": {k: {"data": {"type": "appCategories", "id": v}} for k, v in diff.items()},
+    }})
+    print("Categories: set " + ", ".join(f"{k}={v}" for k, v in diff.items()))
+    return "set " + ", ".join(f"{k}={v}" for k, v in diff.items())
+
+
+def ensure_app_info_localization(c, info_id, primary_locale):
+    """Subtitle + privacy policy URL. The app name is left alone."""
+    items = c.get_all(f"/v1/appInfos/{info_id}/appInfoLocalizations", {"limit": 200})
+    target = pick_listing_locale(items, primary_locale)
+    if not target:
+        raise ApiError(0, [{"code": "NO_LOCALIZATION", "detail": "the app info has no localization"}])
+    locale = target["attributes"].get("locale")
+    changed = patch_changed(c, "appInfoLocalizations", target,
+                            {"subtitle": SUBTITLE, "privacyPolicyUrl": PRIVACY_URL}, f"App info ({locale})")
+    return f"{locale}: {summarise(changed)}"
+
+
+def ensure_age_rating(c, info_id):
+    """Writes the answers that differ. An answer the API rejects is reported, never fatal."""
+    decl = c.request("GET", f"/v1/appInfos/{info_id}/ageRatingDeclaration")["data"]
+    current = decl["attributes"]
+    known = {k: v for k, v in AGE_RATING.items() if k in current and current[k] != v}
+    # Not in the response = renamed or retired by Apple; tried one by one so a rejection stays isolated.
+    singles = {k: v for k, v in AGE_RATING.items() if k not in current}
+    changed, rejected = [], []
+
+    def patch(attrs):
+        c.request("PATCH", f"/v1/ageRatingDeclarations/{decl['id']}",
+                  body={"data": {"type": "ageRatingDeclarations", "id": decl["id"], "attributes": attrs}})
+
+    if known:
+        try:
+            patch(known)
+            changed.extend(known)
+        except ApiError as e:
+            print(f"  Age rating: bulk update refused ({e}); retrying one answer at a time")
+            singles = {**known, **singles}
+    for k, v in singles.items():
+        try:
+            patch({k: v})
+            changed.append(k)
+        except ApiError as e:
+            rejected.append(k)
+            print(f"::warning::Age rating answer {k}={v} was rejected by the API ({e}). Answer it by hand.")
+    same = len(AGE_RATING) - len(changed) - len(rejected)
+    print(f"Age rating: {len(changed)} answer(s) written, {same} already correct, {len(rejected)} rejected")
+    if changed:
+        print("  written: " + ", ".join(changed))
+    return (f"{len(changed)} written, {same} already correct, {len(rejected)} rejected"
+            + (f" ({', '.join(rejected)})" if rejected else ""))
+
+
+def listing_version(c, app_id):
+    versions = c.get_all(f"/v1/apps/{app_id}/appStoreVersions", {"filter[platform]": "IOS", "limit": 200})
+    for v in versions:
+        a = v["attributes"]
+        if "PREPARE_FOR_SUBMISSION" in (a.get("appVersionState"), a.get("appStoreState")):
+            return v
+    states = ", ".join(f"{v['attributes'].get('versionString')}={v['attributes'].get('appVersionState')}"
+                       for v in versions) or "none"
+    raise ApiError(0, [{"code": "NO_EDITABLE_VERSION",
+                        "detail": f"no iOS version in PREPARE_FOR_SUBMISSION (versions: {states})"}])
+
+
+def ensure_version_localization(c, version_id, primary_locale):
+    items = c.get_all(f"/v1/appStoreVersions/{version_id}/appStoreVersionLocalizations", {"limit": 200})
+    target = pick_listing_locale(items, primary_locale)
+    if not target:
+        raise ApiError(0, [{"code": "NO_LOCALIZATION", "detail": "the version has no localization"}])
+    locale = target["attributes"].get("locale")
+    changed = patch_changed(c, "appStoreVersionLocalizations", target, {
+        "description": DESCRIPTION, "keywords": KEYWORDS, "promotionalText": PROMO_TEXT, "supportUrl": SUPPORT_URL,
+    }, f"Version text ({locale})")
+    # Apple refuses whatsNew on an app's first version.
+    try:
+        changed += patch_changed(c, "appStoreVersionLocalizations", target, {"whatsNew": STORE_WHATS_NEW},
+                                 f"What's New ({locale})")
+    except ApiError as e:
+        print(f"What's New ({locale}): skipped, the API does not accept it on this version ({e})")
+    return f"{locale}: {summarise(changed)}"
+
+
+def ensure_store_review_detail(c, version_id, phone):
+    """App Review contact + notes. An empty phone leaves the stored one alone. The phone is never printed."""
+    attrs = {"contactFirstName": REVIEW_FIRST_NAME, "contactLastName": REVIEW_LAST_NAME,
+             "contactEmail": FEEDBACK_EMAIL, "demoAccountRequired": False, "notes": APP_REVIEW_NOTES}
+    if phone:
+        attrs["contactPhone"] = phone
+    try:
+        detail = c.request("GET", f"/v1/appStoreVersions/{version_id}/appStoreReviewDetail").get("data")
+    except ApiError as e:
+        if e.status != 404:
+            raise
+        detail = None
+    if detail:
+        changed = patch_changed(c, "appStoreReviewDetails", detail, attrs, "App Review information")
+        has_phone = bool(phone or detail["attributes"].get("contactPhone"))
+    else:
+        c.request("POST", "/v1/appStoreReviewDetails", body={"data": {
+            "type": "appStoreReviewDetails",
+            "attributes": attrs,
+            "relationships": {"appStoreVersion": {"data": {"type": "appStoreVersions", "id": version_id}}},
+        }})
+        changed = list(attrs)
+        has_phone = bool(phone)
+        print(f"App Review information: created ({', '.join(changed)})")
+    if not has_phone:
+        print("::warning::App Review contact phone is not set. Run listing again with the contact_phone input.")
+    return summarise(changed) + ("" if has_phone else "; PHONE MISSING - pass contact_phone")
+
+
+def cmd_listing(args):
+    c = load_client()
+    ok = True
+    rows = []
+    app = find_app(c)
+    if not app:
+        print("::error::APP RECORD MISSING - create it in App Store Connect first (docs/TESTFLIGHT.md, A5).")
+        return 1
+    app_id = app["id"]
+    primary_locale = app["attributes"].get("primaryLocale")
+    print(f"App: {app['attributes'].get('name')} (Apple ID {app_id}, primary locale {primary_locale})")
+
+    def step(label, fn):
+        nonlocal ok
+        try:
+            rows.append((label, fn()))
+        except ApiError as e:
+            fail_line(f"{label}: failed", e)
+            rows.append((label, "FAILED"))
+            ok = False
+
+    print("== App information ==")
+    info = None
+    try:
+        info = listing_app_info(c, app_id)
+    except ApiError as e:
+        fail_line("Could not read the app info", e)
+        rows.append(("App information", "FAILED"))
+        ok = False
+    if info:
+        step("Categories", lambda: ensure_categories(c, info))
+        step("Subtitle + privacy policy URL", lambda: ensure_app_info_localization(c, info["id"], primary_locale))
+        print("== Age rating ==")
+        step("Age rating", lambda: ensure_age_rating(c, info["id"]))
+
+    print("== App Store version ==")
+    version = None
+    try:
+        version = listing_version(c, app_id)
+    except ApiError as e:
+        fail_line("Could not find the version to edit", e)
+        rows.append(("App Store version", "FAILED"))
+        ok = False
+    if version:
+        vs = version["attributes"].get("versionString")
+        print(f"Version {vs} (PREPARE_FOR_SUBMISSION)")
+        step(f"Version {vs} copyright + release type", lambda: summarise(patch_changed(
+            c, "appStoreVersions", version, {"copyright": COPYRIGHT, "releaseType": "MANUAL"}, f"Version {vs}")))
+        step(f"Version {vs} text", lambda: ensure_version_localization(c, version["id"], primary_locale))
+        print("== App Review information ==")
+        step("App Review information",
+             lambda: ensure_store_review_detail(c, version["id"], args.contact_phone.strip()))
+
+    print("== Result ==")
+    for k, v in rows:
+        print(f"  {k:<40} {v}")
+    print("== Still manual in App Store Connect ==")
+    for item in LISTING_MANUAL:
+        print(f"  - {item}")
+    write_summary(rows + [("Still manual", "; ".join(LISTING_MANUAL))], "App Store listing")
+    print("== Done (nothing was submitted) ==" if ok else "== Finished with errors (see ::error:: lines above) ==")
+    return 0 if ok else 1
+
+
 # ------------------------------------------------- revoke-runner-certs ----
 
 def cmd_revoke_runner_certs(_args):
@@ -768,6 +1111,9 @@ def main():
     p_invite.add_argument("--first-name", default="")
     p_invite.add_argument("--last-name", default="")
     p_invite.set_defaults(func=cmd_invite_user)
+    p_listing = sub.add_parser("listing", help="fill the App Store listing (no submission, no build, no pricing)")
+    p_listing.add_argument("--contact-phone", default="", help="App Review contact phone (never printed)")
+    p_listing.set_defaults(func=cmd_listing)
     args = parser.parse_args()
     sys.exit(args.func(args))
 
