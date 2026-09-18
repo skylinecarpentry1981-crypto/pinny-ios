@@ -1066,9 +1066,17 @@ def cmd_invite_user(args):
         print(f"{shown}: already a team user")
         return 0
     pending = c.get_all("/v1/userInvitations", {"limit": 200})
-    if any((i["attributes"].get("email") or "").lower() == email.lower() for i in pending):
-        print(f"{shown}: invitation already pending (they must accept the email from Apple)")
-        return 0
+    mine = [i for i in pending if (i["attributes"].get("email") or "").lower() == email.lower()]
+    if mine:
+        # Re-send: Apple has no "resend" call, so cancel the pending invitation and create a new one.
+        for inv in mine:
+            exp = inv["attributes"].get("expirationDate")
+            print(f"{shown}: invitation was pending (expires {exp}); cancelling it to send a fresh email")
+            try:
+                c.request("DELETE", f"/v1/userInvitations/{inv['id']}")
+            except ApiError as e:
+                fail_line(f"Could not cancel the pending invitation for {shown}", e)
+                return 1
     body = {"data": {
         "type": "userInvitations",
         "attributes": {
