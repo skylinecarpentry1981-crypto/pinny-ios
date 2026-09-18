@@ -706,6 +706,47 @@ def cmd_status(_args):
     return 0
 
 
+def cmd_invite_user(args):
+    """Invite a family member to the team (Developer role, this app only) so they can be an internal tester."""
+    c = load_client()
+    email = (args.email or "").strip()
+    if not email:
+        print("::error::--email is required")
+        return 1
+    app = find_app(c)
+    if not app:
+        print("APP RECORD MISSING")
+        return 1
+    shown = mask_email(email)
+    users = c.get_all("/v1/users", {"limit": 200})
+    if any((u["attributes"].get("username") or "").lower() == email.lower() for u in users):
+        print(f"{shown}: already a team user")
+        return 0
+    pending = c.get_all("/v1/userInvitations", {"limit": 200})
+    if any((i["attributes"].get("email") or "").lower() == email.lower() for i in pending):
+        print(f"{shown}: invitation already pending (they must accept the email from Apple)")
+        return 0
+    body = {"data": {
+        "type": "userInvitations",
+        "attributes": {
+            "email": email,
+            "firstName": args.first_name or "Pinny",
+            "lastName": args.last_name or "Family",
+            "roles": ["DEVELOPER"],
+            "allAppsVisible": False,
+            "provisioningAllowed": False,
+        },
+        "relationships": {"visibleApps": {"data": [{"type": "apps", "id": app["id"]}]}},
+    }}
+    try:
+        c.request("POST", "/v1/userInvitations", body=body)
+        print(f"{shown}: invited (Developer role, Pinny only). They accept the email from Apple, then get added to the Owner group.")
+        return 0
+    except ApiError as e:
+        fail_line(f"Could not invite {shown}", e)
+        return 1
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -722,6 +763,11 @@ def main():
     p_family.add_argument("--contact-last-name", default="")
     p_family.add_argument("--build", default="", help="build number to submit (default: newest processed build)")
     p_family.set_defaults(func=cmd_family_link)
+    p_invite = sub.add_parser("invite-user", help="invite a family member to the team (Developer, this app only)")
+    p_invite.add_argument("--email", default="")
+    p_invite.add_argument("--first-name", default="")
+    p_invite.add_argument("--last-name", default="")
+    p_invite.set_defaults(func=cmd_invite_user)
     args = parser.parse_args()
     sys.exit(args.func(args))
 

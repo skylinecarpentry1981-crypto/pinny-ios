@@ -31,7 +31,7 @@ on:
       command:
         description: "setup (default), status (read-only: builds, testers, in-app purchases) or family-link (external TestFlight group + review submission)"
         type: choice
-        options: [setup, status, family-link]
+        options: [setup, status, family-link, invite-user]
         default: setup
       contact_phone:
         description: "family-link: Beta App Review contact phone, e.g. +61400000000 (needed once; never printed)"
@@ -82,17 +82,23 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
-          # Passed through env (not inlined into the script) so the input
-          # can't inject shell commands.
-          TESTER_EMAIL: ${{ inputs.tester_email }}
           ASC_COMMAND: ${{ inputs.command }}
-          CONTACT_PHONE: ${{ inputs.contact_phone }}
-          CONTACT_FIRST_NAME: ${{ inputs.contact_first_name }}
-          CONTACT_LAST_NAME: ${{ inputs.contact_last_name }}
           BUILD_VERSION: ${{ inputs.build }}
         run: |
+          # This repo is public, so Actions logs are public. Personal inputs are NOT put in `env:`
+          # (GitHub prints env values in the log). They are read from the event payload and masked first.
+          read_input() { jq -r --arg k "$1" '.inputs[$k] // ""' "$GITHUB_EVENT_PATH"; }
+          TESTER_EMAIL=$(read_input tester_email)
+          CONTACT_PHONE=$(read_input contact_phone)
+          CONTACT_FIRST_NAME=$(read_input contact_first_name)
+          CONTACT_LAST_NAME=$(read_input contact_last_name)
+          for v in "$TESTER_EMAIL" "$CONTACT_PHONE" "$CONTACT_FIRST_NAME" "$CONTACT_LAST_NAME"; do
+            if [ -n "$v" ]; then echo "::add-mask::$v"; fi
+          done
           if [ "$ASC_COMMAND" = "status" ]; then
             python scripts/asc_setup.py status
+          elif [ "$ASC_COMMAND" = "invite-user" ]; then
+            python scripts/asc_setup.py invite-user --email "$TESTER_EMAIL" --first-name "$CONTACT_FIRST_NAME" --last-name "$CONTACT_LAST_NAME"
           elif [ "$ASC_COMMAND" = "family-link" ]; then
             python scripts/asc_setup.py family-link \
               --contact-phone "$CONTACT_PHONE" \
