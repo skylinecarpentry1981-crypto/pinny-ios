@@ -39,8 +39,12 @@ targets:
           - "Resources/PrivacyInfo.xcprivacy"
           # Referenced by the scheme above, never copied into the bundle.
           - "Resources/Pinny.storekit"
+          - "Resources/sos.wav"
       # App privacy manifest -> Copy Bundle Resources (explicit, not guessed).
       - path: FamilyMap/Resources/PrivacyInfo.xcprivacy
+        buildPhase: resources
+      # SOS push sound (APNs "sound": "sos.wav"); must sit at the bundle root.
+      - path: FamilyMap/Resources/sos.wav
         buildPhase: resources
     info:
       path: FamilyMap/Resources/Info.plist

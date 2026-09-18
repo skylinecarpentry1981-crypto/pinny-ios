@@ -148,7 +148,8 @@ async function sendToTokens(recipients: Recipient[], content: PushContent): Prom
       headers: { "apns-priority": content.urgent ? "10" : "5" },
       payload: {
         aps: {
-          sound: "default",
+          // SOS plays the bundled 12 s siren (FamilyMap/Resources/sos.wav); everything else the default sound.
+          sound: content.urgent ? "sos.wav" : "default",
           ...(content.urgent ? { "interruption-level": "time-sensitive" } : {}),
         },
       },
