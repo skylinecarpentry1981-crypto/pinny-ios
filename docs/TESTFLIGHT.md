@@ -5,7 +5,7 @@ How to get **Pinny** onto family iPhones with TestFlight. No Mac needed: everyth
 - **Path A (main): GitHub Actions.** A GitHub-hosted Mac builds and uploads. Claude starts builds and reads the logs from this PC with `gh`.
 - **Path B (alternative): Codemagic.** Sections 0 and C. `codemagic.yaml` is kept.
 
-There is a short Mac appendix at the end, and G covers a later App Store release.
+There is a short Mac appendix at the end, G covers the App Store release, and H covers selling the Family Pass worldwide.
 Account steps (Apple, Firebase, GitHub secrets) need the owner's own logins. Claude never enters Apple or Google credentials.
 
 | Name | Value |
@@ -278,6 +278,17 @@ Hardcoding `production` would break Debug signing, so it isn't done.
 | 13 | D1–D3 Family group, test information + privacy URL, demo accounts | Owner | To do |
 | 14 | First external build → Beta App Review → family installs (Path A: add the build to "Family", D4) | Owner | To do |
 | 15 | New build before the 90-day expiry | Owner / Claude | Ongoing |
+| H0 | Stage 7 backend: rules (`pass`, `passes`, family create gate), `redeemFamilyPass`, `appStoreNotifications`, Apple root certs, tests | Claude | Done |
+| H1 | Paid Apps Agreement: agree, bank account, tax forms, contact info → status Active | Owner (Account Holder) | To do |
+| H2 | Create the non-consumable IAP `com.skyline.pinny.familypass` (price A$14.99, localisation, review screenshot) | Owner | To do |
+| H3 | Attach the IAP to the first App Store version | Owner | To do |
+| H4 | App Store Server Notifications URL (Sandbox + Production, V2) → send test notification; Claude checks the log | Owner → Claude | To do |
+| H5 | Give Claude the numeric Apple ID → `APP_APPLE_ID` in `functions/.env` → redeploy functions | Owner → Claude | To do |
+| H6 | Sandbox test in TestFlight: buy, restore, refund | Owner | To do |
+| H7 | Small Business Program enrolment | Owner | To do |
+| H8 | Pricing and Availability: Free app, all countries | Owner | To do |
+| H9 | Demo account buys the pass in the sandbox; review notes updated | Owner | To do |
+| H10 | Deploy Stage 7 rules + functions + hosting (privacy page) — before H4/H6 | Claude, after owner OK | To do |
 
 ## G. Later: App Store release
 
@@ -298,9 +309,46 @@ This isn't needed for TestFlight. To go public, add the following in App Store C
    | Identifiers | Device ID | push notification (FCM) token |
    | User Content | Other User Content | family chat messages |
    | Other Data | Other Data Types | battery level, charging state |
-6. **App Review information**: the same demo account + demo family as D3, a contact phone/email, and notes saying location is shared only while the app is open (open, Refresh / Check in, SOS), with no background tracking.
+   | Purchases | Purchase History | Family Pass: Apple transaction id tied to the account (H) |
+6. **App Review information**: the same demo account + demo family as D3, a contact phone/email, and notes saying location is shared only while the app is open (open, Refresh / Check in, SOS), with no background tracking. The demo account must already hold a Family Pass (H9).
 7. Already in place: in-app account deletion (Guideline 5.1.1(v)), Sign in with Apple next to email sign-in, "When In Use" location only, and the export compliance flag.
 8. Pick a build → **Add for Review** → release manually after approval.
+
+## H. Selling: Family Pass + worldwide release (owner steps)
+
+Stage 7 ([STAGE-7-CONTRACT.md](STAGE-7-CONTRACT.md)): one non-consumable in-app purchase, **Family Pass**, unlocks "Create family". Joining is free. Apple takes the payment; the server verifies it ([BACKEND-SETUP §5.1](BACKEND-SETUP.md#51-family-pass-stage-7)). Do these in order; H1 gates everything else.
+
+| Name | Value |
+|---|---|
+| Product ID | `com.skyline.pinny.familypass` (fixed in the app and the server; can't be changed after creation) |
+| Type | Non-Consumable |
+| Reference name (internal) | `Family Pass` |
+| Display name (App Store, English) | `Family Pass` |
+| Description (App Store, English) | `Create a family and invite everyone with a code. One-time purchase, no subscription.` |
+| Price | A$14.99 → Apple's nearest **price point** (Apple shows them per country; pick the A$14.99 one). Prices in every other country are set automatically from that base and shown to the user by the app (`displayPrice`). |
+| Family Sharing | leave **off** (default). |
+
+1. **Paid Apps Agreement** (Account Holder only). App Store Connect → **Business** (older UI: Agreements, Tax, and Banking) → **Paid Apps** → *View and Agree to Terms*. Then, in the same place, add **Bank Account** (the business account Apple pays into; BSB + account number, AUD), **Tax Forms** (Australian entity: the tax questionnaire + a US W-8BEN-E for the American store; ABN and GST status are asked here) and **Contact Info** (senior management, financial, technical, legal — you can be all four).
+   The agreement status must be **Active** before a purchase works, even in the sandbox. Apple usually takes a day or two after the forms are in.
+2. **Create the product.** App Store Connect → Pinny Family Map → **Monetization → In-App Purchases → +** → *Non-Consumable*, reference name and product ID from the table above.
+   Then on the product page:
+   - **Availability**: all countries or regions (default).
+   - **Price Schedule → Add Pricing**: base country Australia, pick the A$14.99 price point → Apple fills in the other 174 storefronts. Confirm.
+   - **App Store Localization → +** → English (Australia): display name and description from the table. Add **English (U.S.)** with the same text if the form asks for the app's primary language.
+   - **Review Information**: a screenshot of the paywall (H6 gives you a build; any iPhone screenshot of the paywall is fine, it isn't shown to users) and a note: "One-time purchase that unlocks creating a family. Joining a family with a code is free."
+   - Save. Status becomes *Ready to Submit*.
+3. **Attach it to the version.** On the app version page (G), section **In-App Purchases and Subscriptions** → + → tick Family Pass. The product is reviewed together with the first version that includes it; after that it stays approved.
+4. **Server Notifications URL.** App Store Connect → the app → **App Information → App Store Server Notifications**: set **Production Server URL** *and* **Sandbox Server URL** to the same value, **Version 2** for both:
+   `https://australia-southeast1-PROJECT_ID.cloudfunctions.net/appStoreNotifications`
+   (with the real project id: `https://australia-southeast1-pinny-family-4vea.cloudfunctions.net/appStoreNotifications`). The function must be deployed first (F row 10). Click **Send Test Notification** (Sandbox) → Claude checks `firebase functions:log` for `app store notification … type: "TEST"`. This is what removes a pass after a refund.
+5. **`APP_APPLE_ID`** (optional hardening): copy the app's numeric **Apple ID** (App Information → General Information) to Claude, who writes `APP_APPLE_ID=<number>` into `firebase/functions/.env` and redeploys functions. Without it the server still verifies Apple's signature, bundle id and environment; it only skips comparing the app id on production notifications.
+6. **Test in TestFlight (sandbox = free).** Purchases in a TestFlight build use the sandbox: no money moves, and the Apple ID signed into the App Store gets a sandbox purchase sheet. Optional but tidier: **Users and Access → Sandbox → Test Accounts → +** to make a dedicated sandbox Apple ID, then on the iPhone **Settings → App Store → Sandbox Account** sign in with it (only appears after the first sandbox purchase attempt). What to check: buy → "You're all set" → Create family works; delete the app, reinstall, **Restore purchases** → pass back; **Settings → Sandbox Account → Manage** lets you clear purchase history to buy again. A refund can be simulated from that same Manage screen (**Refund Purchases**) → within a minute the Server Notification arrives → the pass row shows "Not purchased".
+7. **Apple Small Business Program** (15 % commission instead of 30 %). [developer.apple.com/app-store/small-business-program](https://developer.apple.com/app-store/small-business-program/) → *Enroll* with the Account Holder Apple ID, once the Paid Apps Agreement is active. It applies from the next month; you must list any associated developer accounts (none).
+8. **Worldwide availability.** App Store Connect → the app → **Distribution → Pricing and Availability**: app price **Free** (the Family Pass is the only charge), **Availability → All countries or regions**. Pre-orders off. Tax and pricing consequences: Apple collects and remits VAT / sales tax in each storefront, and your proceeds report (Payments and Financial Reports) is per country — nothing to do in the app. Some countries need extra declarations (e.g. Korea, China: none required for a Free app with an IAP that Apple sells).
+9. **App Review demo account with a pass.** App Review must be able to press "Create family" without paying. On a TestFlight build, sign in as the demo account (D3, `review1@…`) and buy the Family Pass in the **sandbox** (H6) — the server accepts sandbox purchases as real passes, so the demo account now holds a pass permanently. Then in **App Review Information → Sign-in Information** give that account's email + password and add to the notes: "The demo account already holds the Family Pass (one-time in-app purchase that unlocks creating a family). Joining a family with an invite code is free. To see the paywall, sign up with a fresh account and tap Create family." Also fill **In-App Purchase** review info if the form asks (same sentence).
+10. **Privacy page and App Privacy answers**: `privacy.html` already states purchase data (Apple transaction id), worldwide availability and Sydney storage; the G5 table gains the **Purchases → Purchase History** row. Nothing else changes.
+
+Copy rules for the listing and the IAP text (contract §4): no "free trial", no "subscription" — it's a one-time purchase tied to the Apple ID.
 
 ## Appendix: with a Mac (optional)
 

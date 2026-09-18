@@ -40,6 +40,9 @@ const FAM = "familyA";
 const FAM2 = "familyC";
 const CODE = "ABC123";
 const CODE2 = "ZZZ999";
+/** users/{uid}.pass as redeemFamilyPass writes it (Stage 7). */
+const TXN = "2000000123456789";
+const PASS = { transactionId: TXN, productId: "com.skyline.pinny.familypass", verifiedAt: new Date() };
 
 let env;
 // One Firestore instance per uid (batch refs must share an instance).
@@ -222,8 +225,9 @@ describe("users", () => {
 // families — create batch
 // ---------------------------------------------------------------------------
 describe("families: create", () => {
+  // Stage 7: creating a family needs a server-written pass on the profile.
   beforeEach(async () => {
-    await seed((adb) => setDoc(doc(adb, "users", A), { name: "Alice", notifyOnCheckIn: true, updatedAt: new Date() }));
+    await seed((adb) => setDoc(doc(adb, "users", A), { name: "Alice", notifyOnCheckIn: true, updatedAt: new Date(), pass: PASS }));
   });
 
   it("create batch (family + inviteCode + users.familyId) succeeds", async () => {
@@ -812,6 +816,112 @@ describe("location", () => {
     await seed((adb) => setDoc(doc(adb, "users", C), { name: "Carol", notifyOnCheckIn: true, updatedAt: new Date() }));
     await assertFails(getDoc(doc(db(C), "users", A)));
     await assertFails(getDocs(query(collection(db(C), "users"), where("familyId", "==", FAM))));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stage 7 — Family Pass: users/{uid}.pass and passes/{transactionId} are
+// server-only; creating a family requires a pass. Joining stays free.
+// ---------------------------------------------------------------------------
+describe("stage 7: family pass", () => {
+  const me = (uid = A) => doc(db(uid), "users", A);
+  const seedUser = (extra = {}) =>
+    seed((adb) => setDoc(doc(adb, "users", A), { name: "Alice", notifyOnCheckIn: true, updatedAt: new Date(), ...extra }));
+
+  it("create family without a pass fails", async () => {
+    await seedUser();
+    await assertFails(createFamilyBatch(A).commit());
+  });
+
+  it("create family with a pass (server-seeded) succeeds", async () => {
+    await seedUser({ pass: PASS });
+    await assertSucceeds(createFamilyBatch(A).commit());
+  });
+
+  it("create family with no profile doc at all fails", async () => {
+    await assertFails(createFamilyBatch(A).commit());
+  });
+
+  it("pass in the same batch as the family create does not count (get() sees the state before the batch)", async () => {
+    await seedUser();
+    const batch = writeBatch(db(A));
+    batch.set(doc(db(A), "families", FAM), familyDoc(A));
+    batch.set(doc(db(A), "inviteCodes", CODE), { familyId: FAM });
+    batch.set(doc(db(A), "users", A), { familyId: FAM, pass: PASS }, { merge: true });
+    await assertFails(batch.commit());
+  });
+
+  it("joining needs no pass", async () => {
+    await seedFamilyAOnly();
+    const batch = writeBatch(db(B));
+    batch.update(doc(db(B), "families", FAM), { members: arrayUnion(B) });
+    batch.set(doc(db(B), "users", B), { familyId: FAM }, { merge: true });
+    await assertSucceeds(batch.commit());
+  });
+
+  it("client cannot create its profile with a pass", async () => {
+    await assertFails(setDoc(me(), userDoc({ pass: PASS })));
+    await assertFails(setDoc(me(), userDoc({ pass: null })));
+  });
+
+  it("client cannot add a pass to its profile", async () => {
+    await seedUser();
+    await assertFails(updateDoc(me(), { pass: PASS }));
+    await assertFails(updateDoc(me(), { pass: { ...PASS, verifiedAt: serverTimestamp() }, updatedAt: serverTimestamp() }));
+    await assertFails(setDoc(me(), { pass: PASS }, { merge: true }));
+  });
+
+  it("client cannot change its pass (whole map or a dotted path)", async () => {
+    await seedUser({ pass: PASS });
+    await assertFails(updateDoc(me(), { pass: { ...PASS, transactionId: "other" } }));
+    await assertFails(updateDoc(me(), { "pass.transactionId": "other" }));
+    await assertFails(updateDoc(me(), { "pass.productId": "com.skyline.pinny.other" }));
+    await assertFails(updateDoc(me(), { "pass.verifiedAt": serverTimestamp() }));
+  });
+
+  it("client cannot remove its pass (null, deleteField, or a full set without it)", async () => {
+    await seedUser({ pass: PASS });
+    await assertFails(updateDoc(me(), { pass: null }));
+    await assertFails(updateDoc(me(), { pass: deleteField() }));
+    await assertFails(setDoc(me(), userDoc()));
+  });
+
+  it("another user cannot touch my pass", async () => {
+    await seedUser();
+    await assertFails(updateDoc(me(B), { pass: PASS }));
+  });
+
+  it("other profile updates still work with a pass present", async () => {
+    await seedUser({ pass: PASS });
+    await assertSucceeds(updateDoc(me(), { name: "Alice B", updatedAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(me(), { notifyOnCheckIn: false }));
+    await assertSucceeds(
+      updateDoc(me(), {
+        lastLocation: { lat: -37.8136, lng: 144.9631, updatedAt: serverTimestamp(), src: "open" },
+        updatedAt: serverTimestamp(),
+      }),
+    );
+    // A full set that keeps the identical pass is fine too.
+    await assertSucceeds(setDoc(me(), userDoc({ name: "Alice C", pass: PASS })));
+  });
+
+  it("owner and family can still read a profile with a pass", async () => {
+    await seedFamilyAB();
+    await seed((adb) => updateDoc(doc(adb, "users", A), { pass: PASS }));
+    await assertSucceeds(getDoc(me()));
+    const snap = await assertSucceeds(getDoc(doc(db(B), "users", A)));
+    assert.equal(snap.data().pass.transactionId, TXN);
+  });
+
+  it("passes/{transactionId}: no client read, list, create, update or delete", async () => {
+    await seed((adb) => setDoc(doc(adb, "passes", TXN), { uid: A, productId: PASS.productId, redeemedAt: new Date() }));
+    await assertFails(getDoc(doc(db(A), "passes", TXN)));
+    await assertFails(getDocs(collection(db(A), "passes")));
+    await assertFails(getDocs(query(collection(db(A), "passes"), where("uid", "==", A))));
+    await assertFails(setDoc(doc(db(A), "passes", "new-txn"), { uid: A, productId: PASS.productId, redeemedAt: serverTimestamp() }));
+    await assertFails(updateDoc(doc(db(A), "passes", TXN), { uid: B }));
+    await assertFails(deleteDoc(doc(db(A), "passes", TXN)));
+    await assertFails(getDoc(doc(env.unauthenticatedContext().firestore(), "passes", TXN)));
   });
 });
 

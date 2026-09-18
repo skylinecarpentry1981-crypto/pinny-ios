@@ -117,9 +117,12 @@ service cloud.firestore {
     // request.resource.data is the merged document after the write).
     // The push token is NOT here: family members can read users docs, so it
     // lives in owner-only pushTokens/{uid}.
+    // `pass` (Stage 7) is listed so a client update of another field still
+    // validates once the server has written it; clients can never create,
+    // change or remove it (see the users create / update rules).
     function validUser(d) {
       return d.keys().hasOnly(['name', 'photoURL', 'familyId', 'lastLocation',
-                               'notifyOnCheckIn', 'updatedAt'])
+                               'notifyOnCheckIn', 'updatedAt', 'pass'])
         && validName(d.name)
         && (!('photoURL' in d) || d.photoURL == null
             || (d.photoURL is string && d.photoURL.size() <= 2048))
@@ -136,6 +139,15 @@ service cloud.firestore {
         || (d.familyId is string && isFamilyMemberAfter(d.familyId));
     }
 
+    // Stage 7 — Family Pass. users/{uid}.pass = { transactionId, productId,
+    // verifiedAt } is written only by the redeemFamilyPass function after it
+    // has verified Apple's signed transaction, and removed by
+    // appStoreNotifications on refund. Reads `get()` (state before the batch),
+    // so the pass must already be on the profile when the create batch runs.
+    function hasPass() {
+      return get(userPath(uid())).data.get('pass', null) != null;
+    }
+
     // ------------------------------------------------------------------
     // users/{uid}
     // ------------------------------------------------------------------
@@ -149,10 +161,11 @@ service cloud.firestore {
                 && resource.data.familyId == requesterFamilyId()));
 
       // Create: owner only, valid shape, familyId (if set) must be a family
-      // the user belongs to.
+      // the user belongs to. Never with a pass (server-only).
       allow create: if signedIn()
         && uid() == userId
         && validUser(request.resource.data)
+        && !('pass' in request.resource.data)
         && locationStampedNow(request.resource.data)
         && familyIdAllowed(request.resource.data);
 
@@ -161,9 +174,11 @@ service cloud.firestore {
       // The lastLocation timestamp check applies only when lastLocation is
       // added / changed / removed, so a name or settings update still passes
       // while the stored lastLocation.updatedAt is old.
+      // `pass` may not be added, changed or removed by the client.
       allow update: if signedIn()
         && uid() == userId
         && validUser(request.resource.data)
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['pass'])
         && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['lastLocation'])
             || locationStampedNow(request.resource.data))
         && (request.resource.data.get('familyId', null) == resource.data.get('familyId', null)
@@ -203,9 +218,11 @@ service cloud.firestore {
       // `members array-contains <uid>`.
       allow get, list: if signedIn() && uid() in resource.data.members;
 
-      // Create: the creator is the sole member. The matching
-      // inviteCodes/{code} doc must be written in the same batch.
+      // Create: the creator is the sole member and holds a Family Pass
+      // (Stage 7; joining stays free). The matching inviteCodes/{code} doc
+      // must be written in the same batch.
       allow create: if signedIn()
+        && hasPass()
         && request.resource.data.keys().hasOnly(['name', 'inviteCode', 'members', 'createdBy', 'createdAt'])
         && validName(request.resource.data.name)
         && validInviteCode(request.resource.data.inviteCode)
@@ -298,6 +315,15 @@ service cloud.firestore {
 
       // Delete: server only (purgeFamily in Cloud Functions).
       allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------
+    // passes/{transactionId}  ->  { uid, productId, redeemedAt }   (Stage 7)
+    // One Apple transaction, one account. Written by redeemFamilyPass and
+    // deleted by appStoreNotifications (Admin SDK). No client access at all.
+    // ------------------------------------------------------------------
+    match /passes/{transactionId} {
+      allow read, write: if false;
     }
 
     // ------------------------------------------------------------------

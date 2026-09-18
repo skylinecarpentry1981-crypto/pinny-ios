@@ -24,7 +24,12 @@ targets:
     deploymentTarget: "16.0"
     # Generates a shared "FamilyMap" scheme (xcshareddata) so CI can run
     # `xcodebuild -scheme FamilyMap`. Without this XcodeGen writes no scheme.
-    scheme: {}
+    scheme:
+      # Local StoreKit testing (Stage 7): Debug runs in the simulator / on device use this file
+      # instead of App Store Connect, so "Buy Family Pass" works without the Paid Apps Agreement.
+      # Run action only; archives are untouched. If XcodeGen drops this key, set it by hand in
+      # Xcode: Product > Scheme > Edit Scheme > Run > Options > StoreKit Configuration.
+      storeKitConfiguration: FamilyMap/Resources/Pinny.storekit
     sources:
       - path: FamilyMap
         excludes:
@@ -32,6 +37,8 @@ targets:
           - "Resources/FamilyMap.entitlements"
           - "Resources/GoogleService-Info.plist.example"
           - "Resources/PrivacyInfo.xcprivacy"
+          # Referenced by the scheme above, never copied into the bundle.
+          - "Resources/Pinny.storekit"
       # App privacy manifest -> Copy Bundle Resources (explicit, not guessed).
       - path: FamilyMap/Resources/PrivacyInfo.xcprivacy
         buildPhase: resources
@@ -94,5 +101,8 @@ targets:
         product: FirebaseFirestore
       - package: Firebase
         product: FirebaseMessaging
+      # Stage 7: callable `redeemFamilyPass` (StoreKit itself is a system framework, no entry needed).
+      - package: Firebase
+        product: FirebaseFunctions
       - package: GoogleSignIn
         product: GoogleSignIn

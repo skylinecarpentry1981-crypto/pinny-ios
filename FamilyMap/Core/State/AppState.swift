@@ -55,6 +55,8 @@ final class AppState: ObservableObject {
     let locationSync: LocationSync
     let chatService: ChatService
     let notificationService: NotificationService
+    /// Family Pass (Stage 7): StoreKit purchase / restore + `redeemFamilyPass`.
+    let passService: PassService
 
     private var didStart = false
     /// The first auth callback must always be handled, even when it reports nil (signed out).
@@ -87,7 +89,8 @@ final class AppState: ObservableObject {
         placeService: PlaceService = FirebasePlaceService(),
         locationService: LocationService = LocationService(),
         chatService: ChatService = FirestoreChatService(),
-        notificationService: NotificationService = FirebaseNotificationService()
+        notificationService: NotificationService = FirebaseNotificationService(),
+        passService: PassService = PassService()
     ) {
         self.authService = authService
         self.familyService = familyService
@@ -96,6 +99,7 @@ final class AppState: ObservableObject {
         self.locationSync = LocationSync(locationService: locationService, familyService: familyService)
         self.chatService = chatService
         self.notificationService = notificationService
+        self.passService = passService
         locationSync.sharingUserId = { [weak self] in
             guard let self, self.authState == .ready else { return nil }
             return self.currentUser?.id
@@ -114,6 +118,9 @@ final class AppState: ObservableObject {
     func start() {
         guard !didStart else { return }
         didStart = true
+        // StoreKit `Transaction.updates` listener for the whole app life (Ask to Buy, other devices,
+        // transactions left unfinished because the server call failed last time).
+        passService.start()
         authService.observeAuthState { [weak self] uid in
             Task { @MainActor in
                 self?.handleAuthChange(uid: uid)

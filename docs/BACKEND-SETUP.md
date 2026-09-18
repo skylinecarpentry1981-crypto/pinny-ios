@@ -13,6 +13,7 @@ firebase/
   firestore.rules          # security rules (deny by default)
   firestore.indexes.json   # composite indexes (none needed today)
   functions/               # Cloud Functions (TypeScript)
+  functions/certs/         # Apple's public root CAs for offline purchase verification (§5.1)
   hosting/                 # public privacy + support pages (Firebase Hosting, §12)
   tests/                   # security-rules tests (emulator, demo project)
 ```
@@ -111,7 +112,9 @@ Console → **Build → Firestore Database → Create database**:
 - Mode: **Production** (rules deny everything until you deploy `firestore.rules`).
 - Location: **`australia-southeast1` (Sydney)** — closest to the owner; the
   Functions region is pinned to the same value in `functions/src/index.ts`
-  (`REGION`). Location cannot be changed later.
+  (`REGION`). Location cannot be changed later. The app is sold worldwide
+  (Stage 7); every user's data is stored here, in Sydney, and the privacy
+  page says so (§12).
 
 Deploy rules and indexes:
 
@@ -146,7 +149,25 @@ firebase functions:log     # tail logs
 | `onUserTokenWritten` | `pushTokens/{uid}` written (create / update / delete) | **One phone, one account.** When `token` changes to a new non-empty string, queries `pushTokens` where `token ==` that token and deletes every doc except `{uid}` (one batch). This closes the offline sign-out gap: the old account's stale token doc is deleted as soon as the next account on the phone saves the same token. Loop-safe: `tokenChanged` in `functions/src/token.ts` (unit-tested) fires only when the token changed to a non-empty value, so deletes — this function's own writes, sign-out, dead-token clean-up, account deletion — do nothing, and so does re-saving the same token. The query uses the automatic single-field index. |
 | `onSOSMessage` | `chats/{familyId}/messages/{id}` created | `type == "sos"` only; normal chat messages return at once (**chat sends no pushes**, DESIGN-SPEC §13.5). Push to **every other member with a `pushTokens/{uid}` doc**, ignoring `notifyOnCheckIn`. Title "🚨 SOS from `{name}`" (`users/{senderId}.name`, falling back to `senderName`). Body "Tap to see where they are." when the SOS carried a location, else "Location unavailable." — "carried a location" = the sender's `lastLocation.src == "sos"` and its `updatedAt` is no more than 60 s before the message's `createdAt` (both server times; a location stamped at or after `createdAt` also counts). Decision logic: `sosBody` in `functions/src/sos.ts`, unit-tested. The message text and coordinates are never in the push. APNs priority 10, `sound: default`, `interruption-level: time-sensitive`. Data `{type:"sos", uid, familyId}`. |
 | `onFamilyUpdated` | `families/{familyId}` updated | Housekeeping after a client-side leave. If `members` is empty → `purgeFamily`: deletes the family and its `inviteCodes/{code}` (transaction, re-checks `members` is still empty), then `recursiveDelete` on `families/{familyId}/places` and `chats/{familyId}` (also swept when the family doc is already gone, so a half-finished earlier run leaves nothing behind). Else if `createdBy` is no longer in `members` → sets `createdBy = members[0]`. Loop-safe: purge removes the doc (no further updates); promotion re-fires once and then finds nothing to do. |
-| `onUserDeleted` | Firebase Auth user deleted | Removes uid from `families/{id}.members` (promoting `members[0]` if the creator left) and deletes `users/{uid}` and `pushTokens/{uid}` in one transaction; if the family is now empty, calls the same `purgeFamily` helper (idempotent with `onFamilyUpdated`). |
+| `onUserDeleted` | Firebase Auth user deleted | Removes uid from `families/{id}.members` (promoting `members[0]` if the creator left) and deletes `users/{uid}` and `pushTokens/{uid}` in one transaction; if the family is now empty, calls the same `purgeFamily` helper (idempotent with `onFamilyUpdated`). Then deletes every `passes/*` doc with `uid ==` the deleted uid (Stage 7; query on the automatic single-field index, one batch), releasing the Apple purchase for a re-created account. |
+| `redeemFamilyPass` | **Callable** (v2 `onCall`, region `australia-southeast1`, App Check not enforced), input `{ jws: string }` | Stage 7 (§5.1). Requires auth. Verifies the StoreKit 2 `jwsRepresentation` offline with Apple's `SignedDataVerifier` (bundle id `com.skyline.pinny`, environment Sandbox or Production taken from the payload and enforced against the signature, no online checks), then requires `productId == "com.skyline.pinny.familypass"`, `type == "Non-Consumable"` and no `revocationDate` (`isValidPassTransaction` in `functions/src/pass.ts`, unit-tested). In one transaction: if `passes/{transactionId}` exists for **another** uid → error; else creates it (`{ uid, productId, redeemedAt }`, kept as-is on restore) and sets `users/{uid}.pass = { transactionId, productId, verifiedAt: serverTimestamp }` (merge). Returns `{ ok: true }`. Errors: `unauthenticated` "Sign in to redeem a purchase."; `invalid-argument` "Missing purchase data." / "Purchase data isn't readable." / "Couldn't verify the purchase."; `failed-precondition` "This purchase isn't an active Family Pass." (wrong product / type, refunded); `already-exists` "This purchase is already used by another account.". Logs uid, transactionId and environment — never the JWS. |
+| `appStoreNotifications` | **HTTPS** (v2 `onRequest`, POST `{ signedPayload }`) | App Store Server Notifications V2 (§5.1). Verifies the notification with the same verifier (`verifyAndDecodeNotification`; environment from the payload's `data.environment`). `passUpdateForNotification` (unit-tested): `REFUND` and `REVOKE` → decode `data.signedTransactionInfo`, and if it is our product, delete `passes/{transactionId}` and remove `users/{uid}.pass` **only if it still points at that transactionId** (transaction; the family the user created stays). Everything else (`TEST`, `CONSUMPTION_REQUEST`, `REFUND_REVERSED`, subscription events) is acknowledged and ignored. Responses: 200 for every verified notification, 400 for a bad signature or unreadable body (Apple retries), 405 for non-POST. Logs type, subtype, environment, notificationUUID and transactionId only. |
+
+### 5.1 Family Pass (Stage 7)
+
+- **Package:** `@apple/app-store-server-library` (3.1.0, Node 22 OK). Verification is fully offline: the trust anchors are Apple's three public root certificates in `functions/certs/` (`AppleRootCA-G2.cer`, `AppleRootCA-G3.cer`, `AppleIncRootCertificate.cer`; sources and re-download commands in `functions/certs/README.md`). `enableOnlineChecks` is off, so the function never calls Apple.
+- **Environments:** both `Sandbox` and `Production` transactions are accepted (TestFlight and the App Review demo account buy in the sandbox). The environment is read from the unverified payload only to pick the verifier, which then rejects a payload whose signed environment or bundle id differs. `Xcode` / `LocalTesting` payloads are unsigned and rejected.
+- **`APP_APPLE_ID`** (env, optional): the app's numeric Apple ID from App Store Connect → App Information. Apple's library compares it on **Production notifications** only; transactions never carry a check on it. When unset the function logs a warning and skips that one comparison (signature chain, bundle id and environment are still enforced). Set it once the App Store Connect record exists: create `firebase/functions/.env` (gitignored, so Claude re-creates it per machine) containing `APP_APPLE_ID=1234567890`, then deploy functions; the Firebase CLI loads `.env` at deploy.
+- **Notification URL** to paste into App Store Connect (TESTFLIGHT §H, both Sandbox and Production fields):
+
+  ```
+  https://australia-southeast1-PROJECT_ID.cloudfunctions.net/appStoreNotifications
+  ```
+
+  2nd-gen HTTPS functions answer on this `cloudfunctions.net` URL **and** on a Cloud Run URL of the form `https://appstorenotifications-XXXXXXXXXX-ts.a.run.app` (lower-case name, random suffix), which `firebase deploy` prints as `Function URL (appStoreNotifications(australia-southeast1))`. Either works; the `cloudfunctions.net` one is predictable, so it is the one to paste. For the current project id (`.firebaserc`) that is `https://australia-southeast1-pinny-family-4vea.cloudfunctions.net/appStoreNotifications`. Test it from App Store Connect → the app → App Information → App Store Server Notifications → **Send Test Notification** (arrives as `TEST` → 200, visible in `firebase functions:log`).
+- **Refund after a family was created:** the pass is removed, the family and its data stay. The user can still use the family; they just can't create another one. `REFUND_REVERSED` is ignored — the user taps **Restore purchases**, which redeems the (no longer revoked) transaction again.
+- **One transaction, one account:** `passes/{transactionId}.uid` is the binding. A second account redeeming the same Apple purchase (same Apple ID, different Pinny account) gets `already-exists`. Restore on the original account is idempotent.
+- **Family Sharing** is not handled: leave it off for the product in App Store Connect (the default).
 
 **SOS double push — resolved in Stage 3.6.** The SOS flow writes
 `lastLocation` just before the SOS message. That write now carries
@@ -244,11 +265,21 @@ users/{uid}                     readable by the owner and the same family
   }?                            no other keys; optional fields omitted, never null
   notifyOnCheckIn: boolean      default true
   updatedAt: timestamp
+  pass: {                       Stage 7, SERVER-ONLY (redeemFamilyPass writes, appStoreNotifications removes);
+    transactionId: string       clients may not create / change / delete it. Present = may create a family.
+    productId: string           "com.skyline.pinny.familypass"
+    verifiedAt: timestamp       server time of the (last) redeem
+  }?                            readable with the rest of the doc (owner + same family)
                                 (no fcmToken — rejected since Stage 4; see pushTokens)
 
 pushTokens/{uid}                Stage 4, owner-only (read and write); not even family
   token: string                 FCM registration token, 1–4096 chars
   updatedAt: timestamp          == server time when written
+
+passes/{transactionId}          Stage 7, server-only (no client read or write at all)
+  uid: string                   the Pinny account this Apple transaction is bound to
+  productId: string             "com.skyline.pinny.familypass"
+  redeemedAt: timestamp         first redeem; unchanged by restore; deleted with the account
 
 chats/{familyId}/messages/{messageId}
   senderId: uid
@@ -282,7 +313,9 @@ What the iOS client writes for each action. Rules reject anything else.
 | Toggle check-in notifications | `users/{uid}` update `{ notifyOnCheckIn: Bool, updatedAt: serverTimestamp }` (`notifyOnCheckIn` a Bool; `null` or a string is rejected). Written as a **write-only transaction**, like location: it fails offline instead of sitting in the offline queue, so a failed or timed-out save is never replayed. Saves at once; on failure the toggle flips back to the user doc's value (DESIGN-SPEC §13.2). Affects check-in pushes only — SOS ignores it. |
 | Sign out | **Before** `Auth.auth().signOut()` (the delete needs auth): `pushTokens/{uid}` **delete**, then `Messaging.messaging().deleteToken()` so the next account on this phone gets a new token. Best effort: if offline, sign out anyway (DESIGN-SPEC §9.6 has no error state). **Offline gap resolved server-side:** when the next account signs in on this phone and saves the same token, `onUserTokenWritten` deletes the old account's token doc, so the old family's pushes stop reaching the phone. Until someone signs in, the signed-out phone can still get them; DESIGN-SPEC §13.5 routes such a tap to the Map tab only. |
 | Token removed by the server | Not a client action. `pushTokens/{uid}` is deleted by Functions when FCM reports the token invalid (§5 "Recipients and dead tokens"), when another account saves the same token (`onUserTokenWritten`), and on account deletion (`onUserDeleted`). The next launch finds the server copy missing and saves the token again. |
-| Create family | **One WriteBatch**: `families/{newId}` create `{ name, inviteCode, members:[uid], createdBy: uid, createdAt: serverTimestamp }` + `inviteCodes/{code}` create `{ familyId }` + `users/{uid}` update `familyId`. Generate `code` client-side (`[A-Z0-9]{6}`); if the batch fails with permission-denied the code already exists — regenerate and retry. |
+| Buy Family Pass (Stage 7) | StoreKit 2 `Product.purchase()` for `com.skyline.pinny.familypass` → on `.success(.verified(transaction))` call the callable **`redeemFamilyPass`** (region `australia-southeast1`, `Functions.functions(region:)`) with `["jws": transaction.jwsRepresentation]` → on `{ ok: true }` call `transaction.finish()` and continue to Create family. `users/{uid}.pass` then appears through the profile listener. **Never write `pass` client-side** (rules reject it). Error codes → copy: `already-exists` → "This purchase is already used by another account."; `failed-precondition` / `invalid-argument` → "Couldn't confirm your purchase. Try Restore purchases."; `unauthenticated` → sign in again; anything else (network, `internal`) → "Couldn't complete the purchase. Try again." Don't `finish()` the transaction until the server said ok, so a failed redeem is retried by StoreKit's `Transaction.updates` on the next launch. |
+| Restore purchases (Stage 7) | `AppStore.sync()` (optional; it prompts for the Apple ID), then `for await result in Transaction.currentEntitlements` → the verified transaction with `productID == "com.skyline.pinny.familypass"` → the same `redeemFamilyPass` call with its `jwsRepresentation`. Same call, same errors; a pass already bound to this account is re-confirmed (idempotent). No entitlement → "No Family Pass found for this Apple ID." (client copy). |
+| Create family | **Requires `users/{uid}.pass`** (Stage 7; the rules `get()` the profile, so the pass must already be there — it can't be written in the same batch, and the client can't write it at all). **One WriteBatch**: `families/{newId}` create `{ name, inviteCode, members:[uid], createdBy: uid, createdAt: serverTimestamp }` + `inviteCodes/{code}` create `{ familyId }` + `users/{uid}` update `familyId`. Generate `code` client-side (`[A-Z0-9]{6}`); if the batch fails with permission-denied the code already exists — regenerate and retry. Show the paywall first when the profile has no `pass`; a permission-denied on a profile without `pass` means the pass was refunded meanwhile — show the paywall, not a retry. |
 | Join family | Read `inviteCodes/{code}` (get). Then **one WriteBatch**: `families/{familyId}` update `members: arrayUnion(uid)` + `users/{uid}` update `familyId`. |
 | Leave family | **One WriteBatch**: `families/{familyId}` update `members: arrayRemove(uid)` + `users/{uid}` update `familyId: null` (`FieldValue.delete()` is accepted too). The rules **reject** the `arrayRemove` unless `users/{uid}.familyId` is cleared in the same batch, so a departed member can never keep reading the family's pins. Empty family is purged server-side; creator promoted if creator leaves (`onFamilyUpdated`). The last member leaving (`members` → `[]`) is what triggers the purge. |
 | Delete family | **Not a client action.** Clients never delete `families/{id}` or `inviteCodes/{code}` (rules: `delete: false`); only `purgeFamily` (Admin SDK) does, after the last member leaves. |
@@ -299,6 +332,8 @@ What the iOS client writes for each action. Rules reject anything else.
 
 Messages cannot be edited or deleted by clients (rules: `update, delete: false`).
 Families and invite codes cannot be deleted by clients either — server purge only.
+`users/{uid}.pass` and `passes/*` are server-only (Stage 7): the client only ever
+calls `redeemFamilyPass`.
 
 ## 8. Security notes
 
@@ -340,6 +375,25 @@ Families and invite codes cannot be deleted by clients either — server purge o
   A callable function could be added later if this needs hardening.
 - **Account deletion** (Apple 5.1.1(v)) is fully server-side via
   `onUserDeleted`, so a half-finished client cannot leave orphaned data.
+- **Family Pass = server-verified only (Stage 7).** `users/{uid}.pass` is in
+  `validUser` so ordinary profile updates still validate once it exists, but
+  create rejects a `pass` key and update rejects any diff touching `pass`
+  (add, change, dotted path, `null`, `deleteField`, or a full `set` that
+  drops it). `passes/{transactionId}` denies all client access. `families`
+  create additionally requires `get(users/{uid}).data.pass != null`, read
+  before the batch, so a pass can't be smuggled in alongside the family. The
+  only path to a pass is `redeemFamilyPass`, which verifies Apple's signature
+  offline against Apple's root CAs. Covered by the "stage 7: family pass"
+  suite in `firebase/tests`. Note: `pass` is readable by the same family
+  like the rest of the profile (an Apple transaction id, not a payment
+  detail); `passes/*` (uid ↔ transaction) is not readable by anyone.
+- **Account deletion releases the pass.** `onUserDeleted` deletes
+  `users/{uid}` (the `pass` with it) and then every `passes/*` doc with
+  `uid == deletedUid` (query + batch delete), so the Apple purchase — which
+  is per Apple ID — can be restored on a re-created Pinny account. Between
+  deletion and the next redeem the purchase is bound to nobody; the first
+  account to call `redeemFamilyPass` with it wins, which is the same rule as
+  a first purchase.
 
 ## 9. Location data (privacy)
 
@@ -356,6 +410,7 @@ this section if anything below changes.
 | **Leaving a family** | The leave batch clears `users/{uid}.familyId`, so from that commit the leaver can't read the family's locations and the family can't read the leaver's. The leaver's own `lastLocation` stays on their doc, visible only to them, until it is overwritten or the account is deleted. |
 | **Deletion** | Deleting the account (Settings → Delete account → Firebase Auth delete) fires `onUserDeleted`, which deletes `users/{uid}`, `lastLocation` (with battery and accuracy) included, and `pushTokens/{uid}`. This matches the Settings privacy line "Delete your account at any time to remove your account and location data." Saved places are not part of that: they are shared family data and stay with the family (see Saved places). If the user was the last member, the family is purged, places included. |
 | **Street addresses** | Never stored. The "Near 12 George St" line is geocoded on the viewer's device with Apple's geocoder (`CLGeocoder`) and held in memory only. Apple receives the coordinate for that lookup; say so in the privacy policy. |
+| **Purchase (Stage 7)** | Apple handles payment; no card or Apple ID details ever reach Pinny. Stored: `users/{uid}.pass = { transactionId, productId, verifiedAt }` and `passes/{transactionId} = { uid, productId, redeemedAt }` — the Apple **transaction id** ties the purchase to the account and stops one purchase unlocking two accounts. Removed by `appStoreNotifications` on refund / revoke, and both docs are deleted on account deletion (`onUserDeleted`), so nothing about the purchase outlives the account. App Store privacy label: **Purchases → Purchase History**, linked to user, not tracking, App Functionality. |
 | **Copies elsewhere** | None stored. Pushes carry no coordinates: the check-in push body may carry a saved place name ("At Home.") through FCM/APNs, but it isn't saved, and push data holds only `type`, `uid` and `familyId`; chat messages store only the typed text. Functions log uids, never coordinates. **On-device cache:** the Firestore SDK keeps each member's last-seen family locations on the phone's disk (offline persistence), until overwritten by a newer snapshot or the app is deleted. Location writes don't sit in the offline write queue: the client writes them in a transaction, which fails offline and is never replayed. Open (Stage 6): call `clearPersistence()` on sign-out and account deletion so a shared or handed-down phone keeps no family locations. Firestore point-in-time recovery and backups are off (the default). Turning either on keeps past values for its retention period, so update this section if you do. |
 
 App Store privacy label (location and battery rows):
@@ -387,11 +442,11 @@ npm test        # = firebase emulators:exec --only firestore --project demo-fami
 
 Run it after any change to `firestore.rules`.
 
-Functions unit tests (pure check-in, "inside a place", SOS-body and token-change logic, no emulator):
+Functions unit tests (pure check-in, Family Pass, "inside a place", SOS-body and token-change logic, no emulator, no Apple calls):
 
 ```bash
 cd firebase/functions
-npm test        # = npm run build && node --test test/checkin.test.mjs test/places.test.mjs test/sos.test.mjs test/token.test.mjs
+npm test        # = npm run build && node --test test/checkin.test.mjs test/pass.test.mjs test/places.test.mjs test/sos.test.mjs test/token.test.mjs
 ```
 
 Test files are listed explicitly (Node 24 lesson: don't rely on
@@ -415,6 +470,8 @@ firebase deploy --only firestore
 
 # Cloud Functions
 cd functions && npm install && npm run build && cd ..
+# optional, once the App Store Connect record exists (§5.1):
+#   echo APP_APPLE_ID=1234567890 > functions/.env
 firebase deploy --only functions
 firebase functions:log
 

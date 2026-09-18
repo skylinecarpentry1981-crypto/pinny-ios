@@ -4,7 +4,10 @@ import UserNotifications
 
 struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var passService: PassService
     @StateObject private var deleteFlow = DeleteAccountViewModel()
+    @State private var showPaywall = false
+    @State private var isRestoring = false
     @State private var notifyOnCheckIn = true
     @State private var isSavingNotify = false
     @State private var isRequestingNotifications = false
@@ -60,6 +63,8 @@ struct SettingsView: View {
             if let status = appState.notificationStatus {
                 notificationsSection(status)
             }
+
+            familyPassSection
 
             Section("Privacy") {
                 Text("Your location and battery level are shared with your family only when you open Pinny, tap Refresh or Check in, or send an SOS. There is no background tracking. Delete your account at any time to remove your account and location data.")
@@ -133,6 +138,73 @@ struct SettingsView: View {
         )) {
             DeleteAccountSheet(viewModel: deleteFlow)
                 .environmentObject(appState)
+        }
+        .sheet(isPresented: $showPaywall) {
+            PaywallView()
+                .environmentObject(appState)
+                .environmentObject(passService)
+                .presentationDetents([.large])
+        }
+    }
+
+    // MARK: - Family Pass (STAGE-7-CONTRACT §4)
+
+    private var hasPass: Bool {
+        appState.currentUser?.hasPass ?? false
+    }
+
+    /// Status row (tap → paywall; "You're all set" when active) and Restore, always available.
+    private var familyPassSection: some View {
+        Section {
+            Button {
+                showPaywall = true
+            } label: {
+                HStack {
+                    Text("Family Pass")
+                        .foregroundColor(Color.fm.textPrimary)
+                    Spacer()
+                    Text(hasPass ? "Active" : "Not purchased")
+                        .foregroundColor(hasPass ? Color.fm.accent : Color.fm.textSecondary)
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundColor(Color(uiColor: .tertiaryLabel))
+                }
+            }
+            .accessibilityLabel("Family Pass, \(hasPass ? "active" : "not purchased")")
+            Button {
+                restorePurchases()
+            } label: {
+                HStack {
+                    Text("Restore purchases")
+                        .foregroundColor(Color.fm.accent)
+                    if isRestoring {
+                        Spacer()
+                        ProgressView()
+                    }
+                }
+            }
+            .disabled(isRestoring)
+        } header: {
+            Text("Family Pass")
+        } footer: {
+            Text(hasPass
+                 ? "One purchase unlocks one family. Tied to your Apple ID."
+                 : "Needed only to create a family. Joining with a code is free.")
+        }
+    }
+
+    private func restorePurchases() {
+        guard !isRestoring else { return }
+        isRestoring = true
+        errorMessage = nil
+        Task { @MainActor in
+            defer { isRestoring = false }
+            await passService.restore()
+            if case .failed(let message) = passService.state {
+                errorMessage = message
+                passService.reset()
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            }
         }
     }
 

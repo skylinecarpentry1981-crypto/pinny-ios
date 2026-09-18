@@ -6,6 +6,8 @@
  *  onSOSMessage       chats/{familyId}/messages -> high-priority SOS push to whole family
  *  onFamilyUpdated    families/{id} updated    -> purge empty family (+ places, chat) / promote creator
  *  onUserDeleted      Auth user deleted        -> Firestore clean-up (backs in-app "Delete account")
+ *  redeemFamilyPass   callable { jws }         -> verify the StoreKit 2 purchase, write users/{uid}.pass (pass.ts)
+ *  appStoreNotifications HTTPS (Apple V2)      -> REFUND / REVOKE remove the pass (pass.ts)
  *
  * Region: keep in sync with the Firestore database location (see docs/BACKEND-SETUP.md).
  */
@@ -21,6 +23,10 @@ import { shouldNotifyCheckIn } from "./checkin";
 import { placeFor } from "./places";
 import { sosBody } from "./sos";
 import { tokenChanged } from "./token";
+
+// Stage 7 — Family Pass. Defined in pass.ts with an explicit region (module
+// imports run before setGlobalOptions below).
+export { appStoreNotifications, redeemFamilyPass } from "./pass";
 
 const REGION = "australia-southeast1";
 
@@ -51,6 +57,8 @@ interface UserDoc {
   lastLocation?: LastLocation | null;
   notifyOnCheckIn: boolean;
   updatedAt: Timestamp;
+  /** Stage 7 — server-only (pass.ts). Present = may create a family. */
+  pass?: { transactionId: string; productId: string; verifiedAt: Timestamp };
 }
 
 /** pushTokens/{uid} — owner-only, so family members can't read the token. */
@@ -364,5 +372,14 @@ export const onUserDeleted = functionsV1
       await purgeFamily(familyId, emptyInviteCode);
     }
 
-    logger.info("user cleaned up", { uid, familyId });
+    // Stage 7: release the Apple purchase bound to this account, so a restore
+    // on a re-created account (same Apple ID) succeeds instead of already-exists.
+    const passes = await db.collection("passes").where("uid", "==", uid).get();
+    if (!passes.empty) {
+      const batch = db.batch();
+      for (const d of passes.docs) batch.delete(d.ref);
+      await batch.commit();
+    }
+
+    logger.info("user cleaned up", { uid, familyId, passesReleased: passes.size });
   });

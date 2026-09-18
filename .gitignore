@@ -18,6 +18,7 @@ build/
 *.p8
 *.p12
 *.cer
+!firebase/functions/certs/*.cer   # Apple public root CAs (needed by redeemFamilyPass)
 *.mobileprovision
 
 # Firebase secrets (CI writes it from the GOOGLE_SERVICE_INFO_PLIST env var)

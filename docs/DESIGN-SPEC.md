@@ -221,7 +221,7 @@ One thread per family. Replaced in Stage 5 by §13.4 (wireframe, grouping, time,
 │          Cancel              │  .body link
 └──────────────────────────────┘
 ```
-- Hold, haptics, early release, the send states (Sharing location → Sending → Sent / Failed), `Call 000` and location-off copy: **§13.3**, which supersedes the Stage 1 success / error / permission notes that were here. Emergency number 000 (AU) stays a constant (Assumption 3).
+- Hold, haptics, early release, the send states (Sharing location → Sending → Sent / Failed), `Call {emergency number}` and location-off copy: **§13.3**, which supersedes the Stage 1 success / error / permission notes that were here. The emergency number follows the device region since Stage 7 (§13.3).
 
 ### 3.9 Notification Priming (soft-ask; shown once — when and re-offer rules: §13.1)
 
@@ -378,7 +378,7 @@ Timestamps refresh on a 60 s timer while the view is visible, and on `scenePhase
 
 1. **Auth:** Sign in with Apple and Continue with Google are the primaries (§3.1); email/password secondary fallback. Drop the link if Apple/Google-only is preferred.
 2. **SOS confirm:** hold-to-confirm 1.5 s (not 2-step tap).
-3. **Emergency number:** `000` (AU) on the SOS-sent state; kept as a constant.
+3. **Emergency number:** ~~`000` (AU) on the SOS-sent state; kept as a constant.~~ Superseded in Stage 7: follows the device region (§13.3).
 4. **Photo upload** is stage 2; stage 1 ships initials only.
 5. **Place line** — reverse-geocoded on the viewer's device for drawer rows, never stored (§11.4). Supersedes Stage 3's no-geocoding rule. `At {placeName}` from Family Places comes first (§12.4).
 
@@ -800,10 +800,10 @@ Entry: map SOS button (§11.3) or the full-drawer header `SOS` → SOS Confirm s
 |---|---|---|
 | Sharing location | `ProgressView` + `Sharing your location…` | One fix, 3 s max. No fix → the device's cached fix if ≤ 2 min old, else carry on without a location. An SOS location can be up to 2 min older than its timestamp (cached fix), so an approximate position is sent rather than none. Location off → step skipped. |
 | Sending | `ProgressView` + `Sending SOS…` | Reachability checked first. If there is a fix: `lastLocation` write with `src: "sos"`, then the message. 10 s timeout. |
-| Sent | SF `checkmark.circle.fill` 48 pt · `SOS sent to your family` (`.title2` bold) · without a location, body `Sent without your location.` · bordered `Call 000` · PrimaryButton `Done` | `.success` haptic. No auto-dismiss: Call 000 stays until Done (the old 3 s auto-dismiss is dropped). |
-| Failed | SF `exclamationmark.triangle.fill` `sosRedText` · offline `Couldn't send SOS. Check your connection, or call 000.` · other errors / timeout `Couldn't send SOS. Try again, or call 000.` · PrimaryButton `Try again` · bordered `Call 000` | `.error` haptic. Try again resends at once, no second hold — the user already confirmed. |
+| Sent | SF `checkmark.circle.fill` 48 pt · `SOS sent to your family` (`.title2` bold) · without a location, body `Sent without your location.` · bordered `Call {emergency number}` (e.g. `Call 000`, `Call 911`) · PrimaryButton `Done` | `.success` haptic. No auto-dismiss: the call button stays until Done (the old 3 s auto-dismiss is dropped). |
+| Failed | SF `exclamationmark.triangle.fill` `sosRedText` · offline `Couldn't send SOS. Check your connection, or call {emergency number}.` · other errors / timeout `Couldn't send SOS. Try again, or call {emergency number}.` · PrimaryButton `Try again` · bordered `Call {emergency number}` | `.error` haptic. Try again resends at once, no second hold — the user already confirmed. |
 
-- `Call 000` opens `tel://000` (system call confirmation); the number is the Assumption 3 constant.
+- **Emergency number follows the device region** (Stage 7 decision, replaces Assumption 3): `Locale.current.region` → AU `000`, NZ `111`, US / CA / MX `911`, GB / IE `999`, KR `112`, JP `110`, IN `112`, anything else `112`. The button opens `tel://{number}` (system call confirmation). The number is substituted into the `Call {emergency number}` label and both Failed strings; it is resolved once when the sheet opens, never hard-coded in copy.
 - The message ID is created before the first write and reused by Try again. If that document already exists (a timed-out write landed), show Sent — one SOS, never two.
 - Location off: the SOS still sends, with no `lastLocation` write; the Sent state and the push both say so.
 
@@ -865,5 +865,77 @@ Entry: map SOS button (§11.3) or the full-drawer header `SOS` → SOS Confirm s
 - Bubble = one element: `Mum, Home by 6?, 3:12 pm` — the sender on every bubble, even where the name is hidden; mine `You, …`. Pending adds `, sending`; failed adds `, not sent`, hint `Double-tap to retry`, custom actions `Retry` and `Delete`. Sent bubbles have a `Copy` custom action.
 - Day separators have the header trait; `Load earlier` is a button. Input label `Message`; the counter reads `912 of 1000 characters`; send label `Send` (dimmed when disabled).
 - SOS card: one element `SOS. Sol sent an SOS at 3:42 pm`, then the button `Show Sol on map`. A new card is announced (§7).
-- SOS sheet: each state change posts an announcement (`Sending SOS`, `SOS sent to your family`, or the failure string). `Call 000` label `Call triple zero`.
+- SOS sheet: each state change posts an announcement (`Sending SOS`, `SOS sent to your family`, or the failure string). the call button's VoiceOver label is `Call {emergency number}` read digit by digit (`Call 0 0 0`, `Call 9 1 1`) via `.accessibilityLabel` with the digits spaced — no spelled-out names, since they differ by region.
 - Dynamic Type: bubbles grow vertically; Sent / Failed buttons stack full width at accessibility sizes; the hold button keeps a 64 pt minimum. Every control above ≥ 44 pt. The mascot is hidden from VoiceOver.
+
+---
+
+## 14. Stage 7 addendum — Family Pass paywall
+
+Implements STAGE-7-CONTRACT §4. One non-consumable IAP unlocks **creating** a family; joining stays free. **§0 amended:** `PinnyMascot` is also allowed on this paywall, 60 × 72 pt — still decorative, still nowhere else. No word on any screen may be "subscription", "trial", "renew", "cancel any time" or a mention of buying elsewhere (Apple 3.1.1). The price is always `product.displayPrice` — never typed into code or copy.
+
+### 14.1 Where it appears
+- **Onboarding (§3.2):** tapping `Create family` with no pass → validate the name first (§9.1 `Give your family a name (1–40 characters).`) → present the paywall as a `.sheet` (`.large` detent, `xmark.circle.fill` close button top-right, 44 pt). The typed name is kept. Success → dismiss → the create runs at once, then §9.3 as usual.
+- **Settings › Family Pass (§14.4):** `Not purchased` row → same sheet. `Join with a code instead` is hidden here (already in a family). Success → `Done` dismisses; the row flips to `Active`.
+- The client's cached StoreKit entitlement may skip the sheet (contract §5); it never unlocks the create button — only `users/{uid}.pass` does. If the server says no pass but StoreKit has one, show the paywall in the **verifying** state straight away.
+
+### 14.2 Layout
+```
+iPhone SE (375 × 667)                          iPhone 15 (393 × 852)
+┌──────────────────────────────┐              ┌──────────────────────────────┐
+│ ━━                        ⓧ  │ grabber,close│ ━━                        ⓧ  │
+│        (PinnyMascot)         │ 60×72, deco. │                              │
+│         Family Pass          │ .title bold  │        (PinnyMascot)         │ same content,
+│  One pass, your whole family │ .subheadline │         Family Pass          │ top block starts
+│                              │ secondary    │  One pass, your whole family │ 48 pt lower;
+│ ⬢ Create your family's       │ 3 benefits:  │                              │ benefits keep
+│   private map                │ SF 20pt      │ ⬢ Create your family's       │ the 12 pt gap;
+│ ⬢ Everyone joins free with   │ brandAccent, │   private map                │ Spacer above the
+│   your code                  │ .body, 12 pt │ ⬢ Everyone joins free with   │ price soaks up
+│ ⬢ SOS, chat and places       │ gap, 16 pt   │   your code                  │ the rest
+│   included                   │ indent       │ ⬢ SOS, chat and places       │
+│                              │              │   included                   │
+│           A$14.99            │ .title2 bold │                              │
+│ [ Buy Family Pass — A$14.99] │ Primary 50pt │           A$14.99            │
+│ [ Restore purchases        ] │ bordered 44  │ [ Buy Family Pass — A$14.99] │
+│   Join with a code instead   │ .footnote    │ [ Restore purchases        ] │
+│ One-time purchase, tied to   │ .caption2    │   Join with a code instead   │
+│ your Apple ID.               │ tertiary     │ One-time purchase, tied to   │
+└──────────────────────────────┘              │ your Apple ID.               │
+                                              └──────────────────────────────┘
+```
+- Icons: `map.fill`, `person.2.fill`, `sos` (20 pt, `brandAccent`, hidden from VoiceOver). Padding 20; benefits are text with icons, no cards (§1.2). Price + buttons + link + footer are a bottom block in `.safeAreaInset(edge: .bottom)`; the top block scrolls if it must.
+- **Subtitle** `One pass, your whole family`. **Legal footer** exactly `One-time purchase, tied to your Apple ID.` — it is the only place that says "one-time"; the benefits never mention price.
+- **Dynamic Type ≥ accessibility1:** mascot hidden, `Buy` label wraps to two lines (price on its own line), bordered button 50 pt. Nothing truncates.
+- `Join with a code instead` → dismiss → §3.2 Join section with the code field focused (the Create name is cleared).
+
+### 14.3 States (contract §4; strings exact)
+| State | What shows | Notes |
+|---|---|---|
+| Loading products | Price line `A$00.00` `.redacted(.placeholder)`; Buy = PrimaryButton `isLoading`, disabled | Restore, Join and close stay enabled. Failure → ErrorBanner `Couldn't load Family Pass. Try again.` (offline: §9.1 string) with trailing `Retry`. |
+| Ready | Price + `Buy Family Pass — A$14.99` | `.light` haptic on tap, then Apple's payment sheet. |
+| Purchasing | Buy `isLoading`; Restore, Join, close disabled; `interactiveDismissDisabled(true)` | The sheet is locked until StoreKit returns. |
+| Verifying | Buy still `isLoading`; `.footnote` secondary under it: `Confirming your purchase…` | While `redeemFamilyPass` runs. Same lock. 15 s → verification failed. Do **not** `finish()` the transaction until the server confirms. |
+| Success | Content replaced: SF `checkmark.circle.fill` 48 pt `brandAccent` · `You're all set` `.title2` bold · body `Your Family Pass is active on this Apple ID.` · PrimaryButton `Continue` (`Done` from Settings) | `.success` haptic. Continue → §14.1 flow. Back-swipe off. |
+| Pending (Ask to Buy) | Content replaced: SF `clock.fill` 48 pt secondary · `Waiting for approval` `.title2` bold · body `This purchase was sent to your family organiser for approval. Once it's approved, open Pinny again or tap Restore purchases.` · bordered `Restore purchases` · plain `Not now` | Neither is the create. If the approval arrives while the app is open (`Transaction.updates`) → verifying → success, even if this sheet is gone (Settings row flips). |
+| Cancelled | Nothing. Back to Ready. | `.userCancelled` is silent, like cancelled sign-in (§9.1). |
+| Failed (purchase) | ErrorBanner at the top of the sheet: `Couldn't complete the purchase. Try again.` · offline: `You're offline. Check your connection.` | `.error` haptic. Sheet unlocks. |
+| Failed (verification) | ErrorBanner `Couldn't confirm your purchase. Try Restore purchases.` | Restore re-sends the current entitlement's JWS (contract §2). Sheet unlocks. |
+| Restoring | `Restore purchases` shows its own spinner (label `Restoring…`); Buy disabled | Found → Verifying → Success. None → InfoBanner `.info` `No Family Pass found on this Apple ID.` Failed → ErrorBanner `Couldn't restore purchases. Try again.` |
+
+New strings (not in §9.1; add to `AppError.userMessage`): `Couldn't load Family Pass. Try again.`, `Couldn't restore purchases. Try again.`, `No Family Pass found on this Apple ID.` One banner at a time, ErrorBanner rules from §9.
+
+### 14.4 Settings › Family Pass (new section between NOTIFICATIONS and PRIVACY, §3.7)
+| Pass | Rows | Footer (`.footnote` secondary) |
+|---|---|---|
+| Active | `Family Pass` + trailing `Active` (secondary, no chevron) · `Restore purchases` (`brandAccent` text row) | `One-time purchase, tied to your Apple ID. Only the person who creates a family needs it.` |
+| Not purchased | `Family Pass` + trailing `Not purchased ›` → paywall sheet · `Restore purchases` | `Needed only to create a family. Joining with a code is free.` |
+- `Restore purchases` from Settings: row spinner; found → toast `Family Pass restored` + row → Active; none → InfoBanner `.info` `No Family Pass found on this Apple ID.`; failed → ErrorBanner `Couldn't restore purchases. Try again.`
+- Refund / revocation (contract §2) flips the row back to `Not purchased` on the next read; nothing else changes and the family stays.
+- Family tab: no change for anyone. Members never see "pass", "buy" or a price.
+
+### 14.5 Accessibility
+- Buy button label reads the price: `Buy Family Pass, A$14.99`; loading: `Buy Family Pass, loading price` with the `.notEnabled` trait; purchasing/verifying: `Buy Family Pass, in progress`. Restore: `Restore purchases`; link: `Join with a code instead`, button trait; close: `Close`.
+- `Family Pass` has the header trait; each benefit is one element (icon hidden); the mascot is hidden. Price line reads `A$14.99, one-time purchase`.
+- Announcements on every state change: `Confirming your purchase`, `You're all set`, `Waiting for approval`, or the failure string. Focus moves to the banner or the new title.
+- Every control ≥ 44 pt; contrast per §5 (`onAccent` on `brandAccent`, `sosRedText` only in banners' icons). Reduce Motion: no slide-in on the banner.

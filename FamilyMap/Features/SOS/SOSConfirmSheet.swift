@@ -21,8 +21,13 @@ final class SOSFlow: ObservableObject {
     /// Guards against a second run while one is in flight (rapid double trigger).
     private var isRunning = false
 
-    static let offlineFailure = "Couldn't send SOS. Check your connection, or call 000."
-    static let otherFailure = "Couldn't send SOS. Try again, or call 000."
+    // The number follows the device region (EmergencyNumber): "000" in Australia, "911" in the US...
+    static var offlineFailure: String {
+        "Couldn't send SOS. Check your connection, or call \(EmergencyNumber.forCurrentRegion())."
+    }
+    static var otherFailure: String {
+        "Couldn't send SOS. Try again, or call \(EmergencyNumber.forCurrentRegion())."
+    }
     private static let sendTimeoutNanoseconds: UInt64 = 10_000_000_000
 
     /// Swipe-to-dismiss is off while sharing or sending.
@@ -111,8 +116,10 @@ struct SOSConfirmSheet: View {
     @State private var showsKeepHolding = false
     @State private var keepHoldingTask: Task<Void, Never>?
 
-    /// Emergency number (AU), DESIGN-SPEC Assumption 3. Opens the system call confirmation.
-    private static let emergencyCallURL = URL(string: "tel://000")
+    /// Emergency number for the device region (000 in Australia, 911 in the US, 112 elsewhere).
+    /// Opens the system call confirmation.
+    private var emergencyNumber: String { EmergencyNumber.forCurrentRegion() }
+    private var emergencyCallURL: URL? { URL(string: "tel://\(emergencyNumber)") }
 
     var body: some View {
         content
@@ -235,10 +242,10 @@ struct SOSConfirmSheet: View {
     }
 
     private var callButton: some View {
-        PrimaryButton(title: "Call 000", style: .bordered) {
+        PrimaryButton(title: "Call \(emergencyNumber)", style: .bordered) {
             callEmergency()
         }
-        .accessibilityLabel("Call triple zero")
+        .accessibilityLabel("Call emergency services, \(emergencyNumber)")
     }
 
     // MARK: - Actions
@@ -255,7 +262,7 @@ struct SOSConfirmSheet: View {
     }
 
     private func callEmergency() {
-        guard let url = Self.emergencyCallURL else { return }
+        guard let url = emergencyCallURL else { return }
         UIApplication.shared.open(url)
     }
 }

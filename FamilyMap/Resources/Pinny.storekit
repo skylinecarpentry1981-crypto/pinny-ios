@@ -1,0 +1,35 @@
+{
+  "identifier" : "7C2E5B1A-4F63-4D2B-9A0E-5D1F3C8B2A71",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "14.99",
+      "familyShareable" : false,
+      "internalID" : "6752000001",
+      "localizations" : [
+        {
+          "description" : "Create your family in Pinny. One purchase unlocks one family; everyone else joins free with your invite code.",
+          "displayName" : "Family Pass",
+          "locale" : "en_AU"
+        }
+      ],
+      "productID" : "com.skyline.pinny.familypass",
+      "referenceName" : "Family Pass",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_developerTeamID" : "X86UHCK734",
+    "_locale" : "en_AU",
+    "_storefront" : "AUS"
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 3,
+    "minor" : 0
+  }
+}

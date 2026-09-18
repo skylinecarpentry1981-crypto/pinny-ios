@@ -30,7 +30,7 @@ Push notifications and Sign in with Apple need the matching capabilities enabled
 
 Rules and functions live in `firebase/`. Follow [docs/BACKEND-SETUP.md](docs/BACKEND-SETUP.md) for the `firebase deploy` steps.
 
-## Stage status (6 stages)
+## Stage status (7 stages)
 
 | Stage | Scope | Status |
 |-------|-------|--------|
@@ -42,5 +42,6 @@ Rules and functions live in `firebase/`. Follow [docs/BACKEND-SETUP.md](docs/BAC
 | 4 | Push notifications (FCM token, check-in alerts) + SOS | In review |
 | 5 | Group chat | In review |
 | 6 | Final review + polish (account deletion shipped in stage 2) | TODO |
+| 7 | Family Pass in-app purchase (StoreKit 2, server-verified) + worldwide App Store release | In review |
 
 Search the code for `TODO(stage N)` to find every stub.

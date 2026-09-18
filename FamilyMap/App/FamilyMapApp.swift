@@ -12,6 +12,7 @@ struct FamilyMapApp: App {
                 .environmentObject(appState)
                 .environmentObject(appState.locationService)
                 .environmentObject(appState.locationSync)
+                .environmentObject(appState.passService)
                 .onAppear {
                     // Push taps go to AppState; one that launched the app is delivered now.
                     let appState = self.appState

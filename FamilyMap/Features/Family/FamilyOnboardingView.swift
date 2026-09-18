@@ -25,15 +25,19 @@ final class FamilyOnboardingViewModel: ObservableObject {
         }
     }
 
-    func createFamily(appState: AppState) async {
+    /// Rules: validName is 1–40 UTF-16 units (an emoji counts 2+). Shows the §9.1 string instead of
+    /// silently disabling. Checked before the paywall too, so nobody buys a pass for an empty name.
+    func validatedFamilyName() -> String? {
         let name = trimmedFamilyName
-        guard !isBusy else { return }
-        // Rules: validName is 1–40 UTF-16 units (an emoji counts 2+). Show the §9.1 string instead
-        // of silently disabling.
         guard (1...40).contains(name.utf16.count) else {
             errorMessage = AppError.familyName
-            return
+            return nil
         }
+        return name
+    }
+
+    func createFamily(appState: AppState) async {
+        guard !isBusy, let name = validatedFamilyName() else { return }
         await run {
             let family = try await appState.familyService.createFamily(name: name)
             appState.didCreate(family)
@@ -74,6 +78,17 @@ struct FamilyOnboardingView: View {
     @EnvironmentObject private var appState: AppState
     @StateObject private var viewModel = FamilyOnboardingViewModel()
     @FocusState private var focusedField: Field?
+    /// Family Pass gate (STAGE-7-CONTRACT §2): "Create family" without a pass opens the paywall.
+    @State private var showPaywall = false
+    /// What to do once the paywall sheet has closed.
+    @State private var afterPaywall: AfterPaywall?
+
+    private enum AfterPaywall {
+        /// The server confirmed the pass and the user tapped Continue: create the family now.
+        case create
+        /// "Join with a code instead".
+        case focusCode
+    }
 
     /// Exactly one of the two buttons is filled: whichever field has focus or content.
     private var createIsPrimary: Bool {
@@ -92,6 +107,50 @@ struct FamilyOnboardingView: View {
         }
         .background(Color.fm.background)
         .scrollDismissesKeyboard(.interactively)
+        .sheet(isPresented: $showPaywall, onDismiss: handlePaywallDismissed) {
+            PaywallView(
+                onJoinInstead: {
+                    afterPaywall = .focusCode
+                    showPaywall = false
+                },
+                onContinue: {
+                    afterPaywall = .create
+                    showPaywall = false
+                }
+            )
+            .environmentObject(appState)
+            .environmentObject(appState.passService)
+            .presentationDetents([.large])
+        }
+    }
+
+    /// Create: with a server-confirmed pass, straight to the family; without one, the paywall
+    /// (after the name check, so the purchase never ends on a validation error).
+    private func createTapped() {
+        guard !viewModel.isBusy else { return }
+        if appState.currentUser?.hasPass == true {
+            Task { await viewModel.createFamily(appState: appState) }
+            return
+        }
+        guard viewModel.validatedFamilyName() != nil else { return }
+        viewModel.errorMessage = nil
+        focusedField = nil
+        showPaywall = true
+    }
+
+    private func handlePaywallDismissed() {
+        let next = afterPaywall
+        afterPaywall = nil
+        switch next {
+        case .create?:
+            // `pass` came from the users/{uid} listener, so the rules' pass check will hold.
+            guard appState.currentUser?.hasPass == true else { return }
+            Task { await viewModel.createFamily(appState: appState) }
+        case .focusCode?:
+            focusedField = .code
+        case nil:
+            break
+        }
     }
 
     private var setupView: some View {
@@ -112,13 +171,13 @@ struct FamilyOnboardingView: View {
                     .textFieldStyle(.roundedBorder)
                     .focused($focusedField, equals: .name)
                     .submitLabel(.go)
-                    .onSubmit { Task { await viewModel.createFamily(appState: appState) } }
+                    .onSubmit { createTapped() }
                 PrimaryButton(
                     title: "Create family",
                     isLoading: viewModel.isBusy && createIsPrimary,
                     style: createIsPrimary ? .filled : .bordered
                 ) {
-                    Task { await viewModel.createFamily(appState: appState) }
+                    createTapped()
                 }
                 .disabled(viewModel.isBusy)
             }
