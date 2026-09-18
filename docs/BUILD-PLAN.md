@@ -73,3 +73,28 @@ Contract: [STAGE-3.6-CONTRACT.md](STAGE-3.6-CONTRACT.md). Places only label a lo
 - Open before the family relies on SOS: Blaze + Functions deploy + APNs key (owner console steps in TESTFLIGHT.md)
 - Before the App Store: Welcome "Privacy" link to the hosted policy, drop "Terms" (Overseer Stage 6 #2)
 - Device checks: see the carry-forward table at the end of OVERSEER-REVIEW.md
+
+## Stage 7 — Family Pass + worldwide release prep (done)
+Contract: [STAGE-7-CONTRACT.md](STAGE-7-CONTRACT.md).
+- [x] Frontend: StoreKit 2 paywall, restore, Settings rows, region-aware emergency number
+- [x] Backend: server-verified `redeemFamilyPass`, refund webhook, rules deny client writes to `users.pass`; Functions on Blaze
+- [x] Designer: DESIGN-SPEC §14, APP-STORE-LISTING.md
+- [x] Overseer: RETURN (Apple root CAs were gitignored) → fixed → verified on device: sandbox purchase → family created (2026-09-18)
+- Product ID is `com.skyline.pinny.family.pass` (the first ID was created as Consumable by mistake)
+
+## Stage 8 — Profile photos (done)
+Contract: [STAGE-8-CONTRACT.md](STAGE-8-CONTRACT.md).
+- [x] Frontend: PhotosPicker upload, Google photo seeding + backfill, cached avatar loader
+- [x] Backend: `storage.rules`, avatar deleted with the account, 161 rules tests; bucket in australia-southeast1
+- [x] Designer: DESIGN-SPEC §15
+- [x] Overseer: PASS
+
+## Device feedback round (2026-09-18, builds 107–111)
+- [x] Initials invisible on the accent ring; secondary text invisible on the material drawer
+- [x] Overlapping pins spread in a circle; chat keyboard can be dismissed
+- [x] SOS push plays a bundled 12 s siren; Critical Alerts entitlement requested (Apple request HBRVCF33Z9)
+
+## Open (owner)
+- APNs auth key → Firebase Cloud Messaging (no pushes arrive until this is done)
+- App Store: screenshots, App Privacy questionnaire, attach build + Family Pass, submit
+- External TestFlight: build 105 waiting for Beta App Review; public link https://testflight.apple.com/join/WauYUQ7f
