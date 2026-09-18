@@ -20,6 +20,10 @@ struct FamilyMapApp: App {
                     appDelegate.onPushOpened = { route in
                         appState.handlePush(route)
                     }
+                    // Stage 9: an SOS banner shown while Pinny is open is acknowledged (no tab switch).
+                    appDelegate.onSOSPresented = { route in
+                        appState.acknowledgeSOSPush(route)
+                    }
                 }
                 // Google sign-in redirect (com.googleusercontent.apps.… URL scheme, project.yml).
                 .onOpenURL { url in

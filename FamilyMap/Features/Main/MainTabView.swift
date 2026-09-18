@@ -37,6 +37,8 @@ struct MainTabView: View {
             }
         }
         .task {
+            // Stage 9: the session just became ready. Opening Pinny stops the repeated SOS alerts.
+            appState.acknowledgeRecentSOS()
             await appState.refreshNotificationStatus()
             offerPrimingIfNeeded()
         }
@@ -45,6 +47,8 @@ struct MainTabView: View {
             Task { await locationSync.shareIfNeeded() }
             // Coming back from iOS Settings: the Settings rows follow the new permission.
             Task { await appState.refreshNotificationStatus() }
+            // Stage 9: opening Pinny stops the repeated SOS alerts for this member.
+            appState.acknowledgeRecentSOS()
         }
         .onChange(of: locationService.authorizationStatus) { _ in
             offerPrimingIfNeeded()

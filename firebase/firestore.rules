@@ -346,6 +346,26 @@ service cloud.firestore {
         && request.resource.data.createdAt == request.time;
 
       allow update, delete: if false;
+
+      // ----------------------------------------------------------------
+      // .../acks/{userId}  ->  { at }   (Stage 9)
+      // "I have seen this SOS": sosReminder stops re-alerting a member once
+      // their ack exists. Members create only their own, stamped with
+      // serverTimestamp(); never changed or removed by clients (the family
+      // purge deletes them with the chat). The parent message's type is not
+      // checked — an ack on a normal message is harmless.
+      // ----------------------------------------------------------------
+      match /acks/{userId} {
+        allow get, list: if signedIn() && isFamilyMember(familyId);
+
+        allow create: if signedIn()
+          && isFamilyMember(familyId)
+          && uid() == userId
+          && request.resource.data.keys().hasOnly(['at'])
+          && request.resource.data.at == request.time;
+
+        allow update, delete: if false;
+      }
     }
   }
 }

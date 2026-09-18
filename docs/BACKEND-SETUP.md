@@ -147,7 +147,8 @@ firebase functions:log     # tail logs
 |---|---|---|
 | `onLocationUpdated` | `users/{uid}` updated | Push to the other family members with `notifyOnCheckIn == true` and a `pushTokens/{uid}` doc when the update is a fresh share: the user's first share ever, or `lastLocation.updatedAt` (server time) moved forward by 10 min or more. Name / settings updates, users without a family, repeat shares within 10 min and **SOS shares (`lastLocation.src == "sos"`)** send nothing; `src` `"open"`, `"manual"` or absent (legacy) take the normal path. Before sending it reads `families/{familyId}/places` ordered by `createdAt` (oldest first, like the app, so an exact distance tie picks the same place; skipped when nobody opted in) and applies the "inside a place" rule. Copy: title "`{name}` checked in"; body "At `{placeName}`." when inside a place, otherwise "Tap to see where they are.". Decision logic: `shouldNotifyCheckIn` in `functions/src/checkin.ts` and `placeFor` in `functions/src/places.ts`, both unit-tested by `npm test` in `functions/`. APNs priority 5, `sound: default`. Data payload `{type:"checkin", uid, familyId}`. |
 | `onUserTokenWritten` | `pushTokens/{uid}` written (create / update / delete) | **One phone, one account.** When `token` changes to a new non-empty string, queries `pushTokens` where `token ==` that token and deletes every doc except `{uid}` (one batch). This closes the offline sign-out gap: the old account's stale token doc is deleted as soon as the next account on the phone saves the same token. Loop-safe: `tokenChanged` in `functions/src/token.ts` (unit-tested) fires only when the token changed to a non-empty value, so deletes — this function's own writes, sign-out, dead-token clean-up, account deletion — do nothing, and so does re-saving the same token. The query uses the automatic single-field index. |
-| `onSOSMessage` | `chats/{familyId}/messages/{id}` created | `type == "sos"` only; normal chat messages return at once (**chat sends no pushes**, DESIGN-SPEC §13.5). Push to **every other member with a `pushTokens/{uid}` doc**, ignoring `notifyOnCheckIn`. Title "🚨 SOS from `{name}`" (`users/{senderId}.name`, falling back to `senderName`). Body "Tap to see where they are." when the SOS carried a location, else "Location unavailable." — "carried a location" = the sender's `lastLocation.src == "sos"` and its `updatedAt` is no more than 60 s before the message's `createdAt` (both server times; a location stamped at or after `createdAt` also counts). Decision logic: `sosBody` in `functions/src/sos.ts`, unit-tested. The message text and coordinates are never in the push. APNs priority 10, `sound: default`, `interruption-level: time-sensitive`. Data `{type:"sos", uid, familyId}`. |
+| `onSOSMessage` | `chats/{familyId}/messages/{id}` created | `type == "sos"` only; normal chat messages return at once (**chat sends no pushes**, DESIGN-SPEC §13.5). Push to **every other member with a `pushTokens/{uid}` doc**, ignoring `notifyOnCheckIn`. Title "🚨 SOS from `{name}`" (`users/{senderId}.name`, falling back to `senderName`). Body "Tap to see where they are." when the SOS carried a location, else "Location unavailable." — "carried a location" = the sender's `lastLocation.src == "sos"` and its `updatedAt` is no more than 60 s before the message's `createdAt` (both server times; a location stamped at or after `createdAt` also counts). Decision logic: `sosBody` in `functions/src/sos.ts`, unit-tested. The message text and coordinates are never in the push. APNs priority 10, `sound: default`, `interruption-level: time-sensitive`. Data `{type:"sos", uid, familyId, messageId}`, header `apns-collapse-id` = the message ID (Stage 9). After the first push, if anyone was pushed to, it enqueues `sosReminder` attempt 1 for 30 s later; an enqueue failure is only logged (`could not enqueue sos reminder`), never fails the push. |
+| `sosReminder` | **Task queue** (v2 `onTaskDispatched`, Cloud Tasks queue `sosReminder` in `australia-southeast1`; `retryConfig.maxAttempts: 1`, `rateLimits` 10 concurrent / 5 per second), payload `{ familyId, messageId, senderUid, attempt }` | Stage 9 (§5.2): **the SOS keeps alerting until acknowledged.** Attempts 1…9, 30 s apart (about 5 min). Each run: stop if the message is gone (or not an SOS); recipients = current family members with a `pushTokens/{uid}` doc, minus the sender, minus everyone with an ack doc `chats/{familyId}/messages/{messageId}/acks/{uid}`; stop when none remain; otherwise send the **same** SOS push (same title / body rule / data / siren / `apns-collapse-id`, so the new banner replaces the old one) and enqueue the next attempt until 9. A failed send is logged and the chain continues. Decision logic: `remainingRecipients`, `shouldContinue` and `validTask` in `functions/src/sosReminder.ts`, unit-tested. Not callable by clients: Cloud Run only admits the queue's OIDC-signed requests. |
 | `onFamilyUpdated` | `families/{familyId}` updated | Housekeeping after a client-side leave. If `members` is empty → `purgeFamily`: deletes the family and its `inviteCodes/{code}` (transaction, re-checks `members` is still empty), then `recursiveDelete` on `families/{familyId}/places` and `chats/{familyId}` (also swept when the family doc is already gone, so a half-finished earlier run leaves nothing behind). Else if `createdBy` is no longer in `members` → sets `createdBy = members[0]`. Loop-safe: purge removes the doc (no further updates); promotion re-fires once and then finds nothing to do. |
 | `onUserDeleted` | Firebase Auth user deleted | Removes uid from `families/{id}.members` (promoting `members[0]` if the creator left) and deletes `users/{uid}` and `pushTokens/{uid}` in one transaction; if the family is now empty, calls the same `purgeFamily` helper (idempotent with `onFamilyUpdated`). Then deletes every `passes/*` doc with `uid ==` the deleted uid (Stage 7; query on the automatic single-field index, one batch), releasing the Apple purchase for a re-created account. Finally deletes the profile photo `avatars/{uid}.jpg` from the default Storage bucket (Stage 8, `ignoreNotFound`; a Storage error is logged as a warning and does not fail the Firestore clean-up, which is already committed). |
 | `redeemFamilyPass` | **Callable** (v2 `onCall`, region `australia-southeast1`, App Check not enforced), input `{ jws: string }` | Stage 7 (§5.1). Requires auth. Verifies the StoreKit 2 `jwsRepresentation` offline with Apple's `SignedDataVerifier` (bundle id `com.skyline.pinny`, environment Sandbox or Production taken from the payload and enforced against the signature, no online checks), then requires `productId == "com.skyline.pinny.family.pass"`, `type == "Non-Consumable"` and no `revocationDate` (`isValidPassTransaction` in `functions/src/pass.ts`, unit-tested). In one transaction: if `passes/{transactionId}` exists for **another** uid → error; else creates it (`{ uid, productId, redeemedAt }`, kept as-is on restore) and sets `users/{uid}.pass = { transactionId, productId, verifiedAt: serverTimestamp }` (merge). Returns `{ ok: true }`. Errors: `unauthenticated` "Sign in to redeem a purchase."; `invalid-argument` "Missing purchase data." / "Purchase data isn't readable." / "Couldn't verify the purchase."; `failed-precondition` "This purchase isn't an active Family Pass." (wrong product / type, refunded); `already-exists` "This purchase is already used by another account.". Logs uid, transactionId and environment — never the JWS. |
@@ -168,6 +169,54 @@ firebase functions:log     # tail logs
 - **Refund after a family was created:** the pass is removed, the family and its data stay. The user can still use the family; they just can't create another one. `REFUND_REVERSED` is ignored — the user taps **Restore purchases**, which redeems the (no longer revoked) transaction again.
 - **One transaction, one account:** `passes/{transactionId}.uid` is the binding. A second account redeeming the same Apple purchase (same Apple ID, different Pinny account) gets `already-exists`. Restore on the original account is idempotent.
 - **Family Sharing** is not handled: leave it off for the product in App Store Connect (the default).
+
+### 5.2 SOS reminders (Stage 9)
+
+iOS plays at most 30 s of one notification sound and forbids endless ones, so
+the siren is 29 s and the server repeats the push until each receiver
+acknowledges (writes their ack doc, §7).
+
+- **Queue.** Deploying `sosReminder` creates the Cloud Tasks queue
+  `projects/PROJECT_ID/locations/australia-southeast1/queues/sosReminder`. The
+  first deploy enables `cloudtasks.googleapis.com`; if it fails with an
+  API-not-enabled error, wait a minute and deploy again.
+- **Enqueue.** `getFunctions().taskQueue("locations/australia-southeast1/functions/sosReminder")`
+  (`firebase-admin/functions`; the `locations/…/functions/…` form is needed
+  because the function is not in `us-central1`) with
+  `scheduleDelaySeconds: 30`. For a 2nd-gen function the target must be its
+  Cloud Run URL, so the code looks it up once per instance
+  (`cloudfunctions.googleapis.com/v2beta/…/functions/sosReminder` →
+  `serviceConfig.uri`, Google's documented `getFunctionUrl` helper, via
+  `google-auth-library`) and passes it as `uri`; if the lookup fails it falls
+  back to the SDK's default `cloudfunctions.net` URL.
+- **One chain per SOS.** The task ID is `sha256(familyId/messageId/attempt)`,
+  so a duplicate delivery of the Firestore trigger cannot start a second
+  chain (`functions/task-already-exists` is logged at info and ignored).
+- **IAM.** Functions run as the default compute service account,
+  `PROJECT_NUMBER-compute@developer.gserviceaccount.com` (Pinny:
+  `129139618413-compute@…`). Its default **Editor** role covers everything
+  (create tasks, act as itself for the OIDC token, read the function URL,
+  invoke the Cloud Run service); `onTaskDispatched` sets no `invoker`, so the
+  deploy adds no IAM bindings of its own. If the log shows `could not enqueue sos reminder` with
+  `PERMISSION_DENIED` (Editor was removed or never granted): Google Cloud
+  console → **IAM & Admin → IAM** → that service account → add **Cloud Tasks
+  Enqueuer** (`roles/cloudtasks.enqueuer`) and **Service Account User**
+  (`roles/iam.serviceAccountUser`; Cloud Tasks signs the request as this
+  account), plus **Cloud Functions Viewer** (`roles/cloudfunctions.viewer`)
+  if the log says `could not resolve the function url`. If tasks are created
+  but `sosReminder` never logs (403 in Cloud Tasks → queue → task attempts):
+  **Cloud Run → `sosreminder` → Security / Permissions** → add the same
+  account as **Cloud Run Invoker** (`roles/run.invoker`).
+- **Check it.** After a test SOS: `firebase functions:log --only sosReminder`
+  shows a `push sent` line every 30 s until everyone acked
+  (`sos reminders done: nobody left to alert`) or attempt 9 ran.
+- **Cost.** Cloud Tasks' free tier is 1 million operations a month; one SOS is
+  at most 9 tasks (18 operations with the dispatches). Each reminder is one
+  function run with about 5 Firestore reads (message, acks, sender, family
+  users, tokens). Effectively free.
+- **Clean-up.** Ack docs live under the message, so `purgeFamily`'s
+  `recursiveDelete(chats/{familyId})` removes them. A reminder that runs after
+  the purge finds no message and stops.
 
 **SOS double push — resolved in Stage 3.6.** The SOS flow writes
 `lastLocation` just before the SOS message. That write now carries
@@ -199,15 +248,17 @@ keys, which arrive at the top level of the APNs `userInfo` (next to `aps`).
 | `type` | `"checkin"` | `"sos"` | Which push it is. Anything else (or missing): open the Map tab, nothing more. |
 | `uid` | the member who shared | the SOS sender | Member to select, centre and expand in the drawer. |
 | `familyId` | sender's family | sender's family | Route only if it equals my current `familyId` and `uid` is still in my members; otherwise open the Map tab and do nothing else. |
+| `messageId` | not sent | the SOS message's ID (Stage 9) | Acknowledge on tap: create `chats/{familyId}/messages/{messageId}/acks/{myUid}` (§7). Identical on the first push and on every reminder. |
 
-No other keys (the old SOS `messageId` is dropped: the SOS card is found in
-Chat by its `type`). Chat messages send no push in this stage.
+No other keys. Chat messages send no push in this stage.
 
 | | Check-in | SOS |
 |---|---|---|
 | `apns-priority` | `5` | `10` |
 | `aps.sound` | `default` | `default` |
 | `aps.interruption-level` | not set (active) | `time-sensitive` |
+| `apns-collapse-id` | not set | the message ID (Stage 9: a reminder replaces the earlier banner instead of stacking; omitted if the ID is over 64 bytes) |
+| Repeats | no | every 30 s, up to 9 times, to members who have not acknowledged (`sosReminder`) |
 | Honours `notifyOnCheckIn` | yes (opt-in) | no — always sent |
 
 In the foreground the app decides presentation in
@@ -289,6 +340,11 @@ chats/{familyId}/messages/{messageId}
   type: "normal" | "sos"
   createdAt: timestamp          == server time on create
 
+chats/{familyId}/messages/{messageId}/acks/{uid}     Stage 9: "I have seen this SOS"
+  at: timestamp                 == server time on create; the only key. Doc ID = the acknowledging member's uid.
+                                Create-only (own uid, family member); members read; no update / delete.
+                                Only meaningful under type "sos" messages (rules don't check the parent).
+
 inviteCodes/{code} -> { familyId }   lookup table; joining never lists families
 ```
 
@@ -351,8 +407,10 @@ What the iOS client writes for each action. Rules reject anything else.
 | Change profile photo (Stage 8) | Storage `avatars/{uid}.jpg` **put** (JPEG, < 2 MB, `contentType: "image/jpeg"`; rules reject other names, types and sizes), then `users/{uid}` update `{ photoURL: <download URL>, updatedAt: serverTimestamp }`. `photoURL` is a string ≤ 2048 chars; a number, map or longer string is rejected. Only the owner can write either. First Google sign-in seeds `photoURL` from the Google picture URL in the create above. |
 | Remove profile photo (Stage 8) | Storage `avatars/{uid}.jpg` **delete** (best effort, owner only), then `users/{uid}` update `{ photoURL: null, updatedAt: serverTimestamp }` (`FieldValue.delete()` is accepted too). |
 | Delete account | `Auth.auth().currentUser?.delete()` (re-authenticate first if Firebase asks). `onUserDeleted` cleans Firestore, `pushTokens/{uid}` included, and the Storage photo `avatars/{uid}.jpg` — no client token or photo delete needed. Client should also clear local state. |
+| Acknowledge an SOS (Stage 9) | `chats/{familyId}/messages/{messageId}/acks/{myUid}` **create** `{ at: serverTimestamp }` — exactly this one key; the doc ID must be the caller's own uid and the caller a current member of `{familyId}`. A device `Date`, an extra key, another member's uid or a non-member is rejected; acks can't be updated or deleted, so **a second ack of the same message is `permission-denied` — ignore it** (and `already-exists`). Write-only **transaction** like the other writes (never queued offline). **When:** (1) the user taps an SOS push — `messageId` and `familyId` are in the payload; (2) the app becomes active / the session is ready: one query `chats/{familyId}/messages` ordered by `createdAt` desc, limit 20; keep `type == "sos"`, `senderId != me`, younger than 10 min, and ack each; (3) the chat listener delivers such a message while the app is open. Effect: `sosReminder` stops re-alerting this member at its next run (≤ 30 s); the other members keep being alerted until they ack or attempt 9 has run. The sender never acks their own SOS (the server already excludes them). |
 
 Messages cannot be edited or deleted by clients (rules: `update, delete: false`).
+SOS acks (`…/acks/{uid}`) are create-only: own uid, members only, never updated or deleted by clients.
 Families and invite codes cannot be deleted by clients either — server purge only.
 `users/{uid}.pass` and `passes/*` are server-only (Stage 7): the client only ever
 calls `redeemFamilyPass`.
@@ -369,6 +427,14 @@ calls `redeemFamilyPass`.
   owner and by users whose own `familyId` matches. Family docs are readable by
   members only. Invite codes can be fetched one at a time by a signed-in user
   but never listed.
+- **SOS acks = family only, own uid only (Stage 9).**
+  `chats/{familyId}/messages/{messageId}/acks/{uid}`: a current member may
+  create the doc named after their own uid with exactly `{ at }` and
+  `at == request.time`; members read; nobody updates or deletes. So a member
+  can silence the reminders only for themselves, never for someone else, and
+  an ex-member can neither read nor ack. The reminder function reads current
+  members, so someone who leaves stops being alerted. Covered by the
+  "stage 9: SOS acks" suite in `firebase/tests`.
 - **Places = family only.** `families/{familyId}/places` is readable and
   writable only by users currently in that family's `members` (checked
   against the family doc, so a leaver loses access in the same commit).
@@ -434,7 +500,7 @@ this section if anything below changes.
 | **Street addresses** | Never stored. The "Near 12 George St" line is geocoded on the viewer's device with Apple's geocoder (`CLGeocoder`) and held in memory only. Apple receives the coordinate for that lookup; say so in the privacy policy. |
 | **Profile photo (Stage 8)** | Optional. Either the Google profile picture URL copied at first Google sign-in, or a photo the user picks from their library (`PhotosPicker`, no library access beyond the one picture), resized on the phone to 512×512 and stored as `avatars/{uid}.jpg` in the project's Cloud Storage bucket in **Sydney**, with its download URL in `users/{uid}.photoURL`. **Visible to signed-in Pinny users** (Storage read requires sign-in; the Firestore `photoURL` follows the usual owner-or-family read rule). Used only to show the face on the map pin, member rows and chat; **never used for anything else** — no face detection, no analytics, nothing leaves Firebase. Removed by "Remove photo" (object deleted, `photoURL` null) and **deleted with the account** (`onUserDeleted` deletes the object). App Store privacy label: **Photos or Videos**, linked to user, not tracking, App Functionality. |
 | **Purchase (Stage 7)** | Apple handles payment; no card or Apple ID details ever reach Pinny. Stored: `users/{uid}.pass = { transactionId, productId, verifiedAt }` and `passes/{transactionId} = { uid, productId, redeemedAt }` — the Apple **transaction id** ties the purchase to the account and stops one purchase unlocking two accounts. Removed by `appStoreNotifications` on refund / revoke, and both docs are deleted on account deletion (`onUserDeleted`), so nothing about the purchase outlives the account. App Store privacy label: **Purchases → Purchase History**, linked to user, not tracking, App Functionality. |
-| **Copies elsewhere** | None stored. Pushes carry no coordinates: the check-in push body may carry a saved place name ("At Home.") through FCM/APNs, but it isn't saved, and push data holds only `type`, `uid` and `familyId`; chat messages store only the typed text. Functions log uids, never coordinates. **On-device cache:** the Firestore SDK keeps each member's last-seen family locations on the phone's disk (offline persistence), until overwritten by a newer snapshot or the app is deleted. Location writes don't sit in the offline write queue: the client writes them in a transaction, which fails offline and is never replayed. Open (Stage 6): call `clearPersistence()` on sign-out and account deletion so a shared or handed-down phone keeps no family locations. Firestore point-in-time recovery and backups are off (the default). Turning either on keeps past values for its retention period, so update this section if you do. |
+| **Copies elsewhere** | None stored. Pushes carry no coordinates: the check-in push body may carry a saved place name ("At Home.") through FCM/APNs, but it isn't saved, and push data holds only `type`, `uid`, `familyId` and (SOS) `messageId`; chat messages store only the typed text. Functions log uids, never coordinates. **On-device cache:** the Firestore SDK keeps each member's last-seen family locations on the phone's disk (offline persistence), until overwritten by a newer snapshot or the app is deleted. Location writes don't sit in the offline write queue: the client writes them in a transaction, which fails offline and is never replayed. Open (Stage 6): call `clearPersistence()` on sign-out and account deletion so a shared or handed-down phone keeps no family locations. Firestore point-in-time recovery and backups are off (the default). Turning either on keeps past values for its retention period, so update this section if you do. |
 
 App Store privacy label (location and battery rows):
 
@@ -470,11 +536,11 @@ Run it after any change to `firestore.rules` or `storage.rules`. The first run
 downloads the Storage rules runtime (`cloud-storage-rules-runtime`) next to the
 Firestore emulator jar.
 
-Functions unit tests (pure check-in, Family Pass, "inside a place", SOS-body and token-change logic, no emulator, no Apple calls):
+Functions unit tests (pure check-in, Family Pass, "inside a place", SOS-body, SOS-reminder and token-change logic, no emulator, no Apple calls):
 
 ```bash
 cd firebase/functions
-npm test        # = npm run build && node --test test/checkin.test.mjs test/pass.test.mjs test/places.test.mjs test/sos.test.mjs test/token.test.mjs
+npm test        # = npm run build && node --test test/checkin.test.mjs test/pass.test.mjs test/places.test.mjs test/sos.test.mjs test/sosReminder.test.mjs test/token.test.mjs
 ```
 
 Test files are listed explicitly (Node 24 lesson: don't rely on

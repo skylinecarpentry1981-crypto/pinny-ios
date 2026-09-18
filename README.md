@@ -44,5 +44,6 @@ Rules and functions live in `firebase/`. Follow [docs/BACKEND-SETUP.md](docs/BAC
 | 6 | Final review + polish (account deletion shipped in stage 2) | TODO |
 | 7 | Family Pass in-app purchase (StoreKit 2, server-verified) + worldwide App Store release | In review |
 | 8 | Profile photos (Google picture seeding, Photos picker → Firebase Storage `avatars/{uid}.jpg`) | In review |
+| 9 | SOS keeps alerting until acknowledged (29 s siren, reminders every 30 s for 5 min, `acks/{uid}`) | In review |
 
 Search the code for `TODO(stage N)` to find every stub.

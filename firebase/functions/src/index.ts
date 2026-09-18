@@ -3,7 +3,8 @@
  *
  *  onLocationUpdated  users/{uid} updated      -> "checked in" push to family (opt-in, debounced, place-aware)
  *  onUserTokenWritten pushTokens/{uid} written -> delete other accounts' docs holding the same token (one phone, one account)
- *  onSOSMessage       chats/{familyId}/messages -> high-priority SOS push to whole family
+ *  onSOSMessage       chats/{familyId}/messages -> high-priority SOS push to whole family, then starts the reminders
+ *  sosReminder        task queue (Stage 9)     -> re-sends the SOS push every 30 s (9x) to members who have not acked
  *  onFamilyUpdated    families/{id} updated    -> purge empty family (+ places, chat) / promote creator
  *  onUserDeleted      Auth user deleted        -> Firestore clean-up (backs in-app "Delete account")
  *  redeemFamilyPass   callable { jws }         -> verify the StoreKit 2 purchase, write users/{uid}.pass (pass.ts)
@@ -12,17 +13,28 @@
  * Region: keep in sync with the Firestore database location (see docs/BACKEND-SETUP.md).
  */
 
+import { createHash } from "node:crypto";
 import { initializeApp } from "firebase-admin/app";
 import { Timestamp, getFirestore } from "firebase-admin/firestore";
+import { getFunctions } from "firebase-admin/functions";
 import { getMessaging } from "firebase-admin/messaging";
 import { getStorage } from "firebase-admin/storage";
 import { logger } from "firebase-functions";
 import { setGlobalOptions } from "firebase-functions/v2";
 import { onDocumentCreated, onDocumentUpdated, onDocumentWritten } from "firebase-functions/v2/firestore";
+import { onTaskDispatched } from "firebase-functions/v2/tasks";
+import { GoogleAuth } from "google-auth-library";
 import * as functionsV1 from "firebase-functions/v1";
 import { shouldNotifyCheckIn } from "./checkin";
 import { placeFor } from "./places";
 import { sosBody } from "./sos";
+import {
+  SOSReminderTask,
+  SOS_REMINDER_DELAY_SECONDS,
+  remainingRecipients,
+  shouldContinue,
+  validTask,
+} from "./sosReminder";
 import { tokenChanged } from "./token";
 
 // Stage 7 — Family Pass. Defined in pass.ts with an explicit region (module
@@ -105,6 +117,8 @@ interface PushContent {
   data: Record<string, string>;
   /** SOS pushes are delivered at APNs priority 10 + time-sensitive. */
   urgent?: boolean;
+  /** `apns-collapse-id`: a later push with the same id replaces the earlier banner. */
+  collapseId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +159,14 @@ async function sendToTokens(recipients: Recipient[], content: PushContent): Prom
     notification: { title: content.title, body: content.body },
     data: content.data,
     apns: {
-      headers: { "apns-priority": content.urgent ? "10" : "5" },
+      headers: {
+        "apns-priority": content.urgent ? "10" : "5",
+        // APNs rejects a collapse id over 64 bytes, and message ids are
+        // client-chosen: never let an odd id cost the SOS push itself.
+        ...(content.collapseId && Buffer.byteLength(content.collapseId) <= 64
+          ? { "apns-collapse-id": content.collapseId }
+          : {}),
+      },
       payload: {
         aps: {
           // SOS plays the bundled 12 s siren (FamilyMap/Resources/sos.wav); everything else the default sound.
@@ -295,20 +316,156 @@ export const onSOSMessage = onDocumentCreated(
     const msg = event.data?.data() as MessageDoc | undefined;
     if (!msg || msg.type !== "sos") return;
 
-    const { familyId } = event.params;
+    const { familyId, messageId } = event.params;
     const senderSnap = await db.doc(`users/${msg.senderId}`).get();
     const sender = senderSnap.data() as UserDoc | undefined;
-    const name = sender?.name ?? msg.senderName;
 
     // Everyone in the family, regardless of notifyOnCheckIn.
     const recipients = await familyRecipients(familyId, msg.senderId);
 
-    await sendToTokens(recipients, {
-      title: `🚨 SOS from ${name}`,
-      body: sosBody(msg, sender?.lastLocation),
-      data: { type: "sos", uid: msg.senderId, familyId },
-      urgent: true,
-    });
+    await sendToTokens(recipients, sosContent(familyId, messageId, msg, sender));
+
+    // Stage 9: keep alerting until each receiver acknowledges.
+    if (shouldContinue(0, recipients.length)) {
+      await enqueueSOSReminder({ familyId, messageId, senderUid: msg.senderId, attempt: 1 });
+    }
+  },
+);
+
+/** The SOS push — identical for the first send and every reminder. */
+function sosContent(
+  familyId: string,
+  messageId: string,
+  msg: MessageDoc,
+  sender: UserDoc | undefined,
+): PushContent {
+  return {
+    title: `🚨 SOS from ${sender?.name ?? msg.senderName}`,
+    body: sosBody(msg, sender?.lastLocation),
+    data: { type: "sos", uid: msg.senderId, familyId, messageId },
+    urgent: true,
+    collapseId: messageId, // reminders replace the earlier banner instead of stacking
+  };
+}
+
+// ---------------------------------------------------------------------------
+// sosReminder — SOS keeps alerting until acknowledged (Stage 9)
+// A Cloud Tasks queue function. onSOSMessage enqueues attempt 1 for 30 s
+// later; each run re-sends the SOS push to the members who have no ack doc
+// (chats/{familyId}/messages/{messageId}/acks/{uid}) and enqueues the next,
+// up to attempt 9 (about 5 minutes). The chain stops early when the message
+// is gone (family purged) or nobody un-acknowledged with a push token is left.
+// No Cloud Tasks retries (maxAttempts 1): the next reminder is 30 s away.
+// ---------------------------------------------------------------------------
+
+const SOS_REMINDER_QUEUE = `locations/${REGION}/functions/sosReminder`;
+
+let googleAuth: GoogleAuth | undefined;
+let sosReminderUri: string | undefined;
+
+/**
+ * Cloud Run URL of the 2nd-gen sosReminder function. The Admin SDK would
+ * target https://{region}-{project}.cloudfunctions.net/{name} by default, so
+ * the documented way for 2nd gen is to look the URL up and pass it as `uri`
+ * (firebase.google.com/docs/functions/task-functions). Cached per instance.
+ */
+async function sosReminderUrl(): Promise<string> {
+  if (sosReminderUri) return sosReminderUri;
+  googleAuth ??= new GoogleAuth({ scopes: "https://www.googleapis.com/auth/cloud-platform" });
+  const projectId = await googleAuth.getProjectId();
+  const url =
+    "https://cloudfunctions.googleapis.com/v2beta/" +
+    `projects/${projectId}/locations/${REGION}/functions/sosReminder`;
+  const client = await googleAuth.getClient();
+  const res = await client.request<{ serviceConfig?: { uri?: string } }>({ url });
+  const uri = res.data?.serviceConfig?.uri;
+  if (!uri) throw new Error(`no uri for function at ${url}`);
+  sosReminderUri = uri;
+  return uri;
+}
+
+/**
+ * Enqueue one reminder, 30 s from now. Never throws: a queue problem (API not
+ * enabled, missing IAM role, …) must not fail the push that was just sent.
+ * The task id is a hash of message + attempt, so a duplicate trigger delivery
+ * cannot start a second reminder chain for the same SOS.
+ */
+async function enqueueSOSReminder(task: SOSReminderTask): Promise<void> {
+  try {
+    let uri: string | undefined;
+    if (process.env.FUNCTIONS_EMULATOR !== "true") {
+      try {
+        uri = await sosReminderUrl();
+      } catch (err) {
+        // Fall back to the SDK's default cloudfunctions.net URL.
+        logger.warn("sosReminder: could not resolve the function url", { err: String(err) });
+      }
+    }
+    const id = createHash("sha256")
+      .update(`${task.familyId}/${task.messageId}/${task.attempt}`)
+      .digest("hex");
+    await getFunctions()
+      .taskQueue<SOSReminderTask>(SOS_REMINDER_QUEUE)
+      .enqueue(task, {
+        scheduleDelaySeconds: SOS_REMINDER_DELAY_SECONDS,
+        dispatchDeadlineSeconds: 60,
+        id,
+        ...(uri ? { uri } : {}),
+      });
+  } catch (err) {
+    if ((err as { code?: string }).code === "functions/task-already-exists") {
+      logger.info("sos reminder already enqueued", { ...task });
+      return;
+    }
+    logger.warn("could not enqueue sos reminder", { ...task, err: String(err) });
+  }
+}
+
+export const sosReminder = onTaskDispatched<SOSReminderTask>(
+  {
+    region: REGION,
+    retryConfig: { maxAttempts: 1 },
+    rateLimits: { maxConcurrentDispatches: 10, maxDispatchesPerSecond: 5 },
+    timeoutSeconds: 60,
+  },
+  async (req) => {
+    if (!validTask(req.data)) {
+      logger.warn("sosReminder: bad payload", { data: req.data });
+      return;
+    }
+    const { familyId, messageId, senderUid, attempt } = req.data;
+
+    const msgRef = db.doc(`chats/${familyId}/messages/${messageId}`);
+    const [msgSnap, acksSnap, senderSnap] = await Promise.all([
+      msgRef.get(),
+      msgRef.collection("acks").get(),
+      db.doc(`users/${senderUid}`).get(),
+    ]);
+    const msg = msgSnap.data() as MessageDoc | undefined;
+    if (!msg || msg.type !== "sos") return; // message gone (family purged): stop
+
+    // Current members with a push token, minus the sender, minus the acked.
+    const withToken = await familyRecipients(familyId, senderUid);
+    const remaining = new Set(
+      remainingRecipients(withToken.map((r) => r.uid), senderUid, acksSnap.docs.map((d) => d.id)),
+    );
+    const recipients = withToken.filter((r) => remaining.has(r.uid));
+    if (recipients.length === 0) {
+      logger.info("sos reminders done: nobody left to alert", { familyId, messageId, attempt });
+      return;
+    }
+
+    try {
+      const sender = senderSnap.data() as UserDoc | undefined;
+      await sendToTokens(recipients, sosContent(familyId, messageId, msg, sender));
+    } catch (err) {
+      // Keep the chain alive: there are no task retries.
+      logger.warn("sos reminder push failed", { familyId, messageId, attempt, err: String(err) });
+    }
+
+    if (shouldContinue(attempt, recipients.length)) {
+      await enqueueSOSReminder({ familyId, messageId, senderUid, attempt: attempt + 1 });
+    }
   },
 );
 

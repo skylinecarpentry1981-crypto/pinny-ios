@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import Combine
 import CoreLocation
 import UserNotifications
@@ -24,6 +25,7 @@ final class AppState: ObservableObject {
         didSet {
             if authState != oldValue {
                 applyPendingPushRoute()
+                applyPendingSOSAck()
             }
         }
     }
@@ -79,6 +81,8 @@ final class AppState: ObservableObject {
     private var hasLoadedMembers = false
     /// A tapped push that can't be routed yet (cold start: the session or family is still loading).
     private var pendingPushRoute: PushRoute?
+    /// A tapped SOS push whose ack waits for the session (Stage 9).
+    private var pendingSOSAck: PushRoute?
     /// Between the push-token delete and Auth sign-out; no token is saved meanwhile.
     private var isSigningOut = false
     private var tokenRefreshObserver: AnyCancellable?
@@ -468,6 +472,7 @@ final class AppState: ObservableObject {
     /// the route waits until the session and the family's members have loaded.
     func handlePush(_ route: PushRoute) {
         selectedTab = .map
+        acknowledgeSOSPush(route)
         guard route.type == "checkin" || route.type == "sos", route.uid != nil, route.familyId != nil else {
             pendingPushRoute = nil
             return
@@ -493,6 +498,49 @@ final class AppState: ObservableObject {
                   members.contains(where: { $0.id == uid }) else { return }
             selectedTab = .map
             focusMemberId = uid
+        }
+    }
+
+    // MARK: - SOS acknowledgement (Stage 9)
+
+    /// Opening Pinny acknowledges recent SOS messages from the family, so the server stops repeating
+    /// the alert to this member. Called by MainTabView when it appears (the session became ready) and
+    /// on every return to the foreground. Never from a background launch: the user hasn't seen anything yet.
+    func acknowledgeRecentSOS() {
+        guard authState == .ready,
+              let familyId = currentUser?.familyId,
+              UIApplication.shared.applicationState != .background else { return }
+        let chatService = self.chatService
+        Task {
+            await chatService.acknowledgeRecentSOS(familyId: familyId)
+        }
+    }
+
+    /// An SOS push the user tapped, or saw as a banner while Pinny was open (AppDelegate): its
+    /// message is acknowledged. Never switches tabs.
+    func acknowledgeSOSPush(_ route: PushRoute) {
+        guard route.type == "sos", route.familyId != nil, route.messageId != nil else { return }
+        pendingSOSAck = route
+        applyPendingSOSAck()
+    }
+
+    /// The SOS push's own message: acknowledged at once, or as soon as the session is ready.
+    private func applyPendingSOSAck() {
+        guard let route = pendingSOSAck else { return }
+        switch authState {
+        case .loading:
+            return
+        case .signedOut, .needsFamily:
+            pendingSOSAck = nil
+        case .ready:
+            pendingSOSAck = nil
+            guard let familyId = route.familyId,
+                  let messageId = route.messageId,
+                  familyId == currentUser?.familyId else { return }
+            let chatService = self.chatService
+            Task {
+                await chatService.acknowledgeSOS(familyId: familyId, messageId: messageId)
+            }
         }
     }
 }

@@ -214,6 +214,11 @@ struct SOSConfirmSheet: View {
                     .foregroundColor(Color.fm.textSecondary)
                     .multilineTextAlignment(.center)
             }
+            Text("Your family will be alerted every 30 seconds for 5 minutes, until they open Pinny.")
+                .font(.body)
+                .foregroundColor(Color.fm.textSecondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             callButton
             PrimaryButton(title: "Done") {

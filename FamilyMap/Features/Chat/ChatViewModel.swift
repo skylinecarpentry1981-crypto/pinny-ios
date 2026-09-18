@@ -151,6 +151,7 @@ final class ChatViewModel: ObservableObject {
             hasLoaded = true
         case .messages(let messages, let isFull):
             announceNewSOS(in: messages)
+            acknowledgeNewSOS(in: messages, familyId: familyId)
             let newIds = Set(messages.map(\.id))
             let previousIds = Set(live.filter { !$0.isPending }.map(\.id))
             if isFull, !previousIds.isEmpty, previousIds.isDisjoint(with: newIds) {
@@ -184,6 +185,20 @@ final class ChatViewModel: ObservableObject {
         for message in messages where message.type == .sos && message.senderId != myUid {
             guard !seen.contains(message.id), message.createdAt > listeningSince else { continue }
             UIAccessibility.post(notification: .announcement, argument: "\(message.senderName) sent an SOS")
+        }
+    }
+
+    /// Stage 9: an SOS from someone else that arrives while the thread is open is acknowledged, so
+    /// the server stops repeating the alert to me. Only while the app is on screen.
+    private func acknowledgeNewSOS(in messages: [ChatMessage], familyId: String) {
+        guard let myUid, let chatService, UIApplication.shared.applicationState == .active else { return }
+        let seen = Set(live.map(\.id))
+        let now = Date()
+        for message in messages where !seen.contains(message.id) && message.needsSOSAck(myUid: myUid, now: now) {
+            let messageId = message.id
+            Task {
+                await chatService.acknowledgeSOS(familyId: familyId, messageId: messageId)
+            }
         }
     }
 

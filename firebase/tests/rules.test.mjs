@@ -568,6 +568,77 @@ describe("messages", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Stage 9 — SOS acknowledgements: chats/{familyId}/messages/{id}/acks/{uid}
+// ---------------------------------------------------------------------------
+describe("stage 9: SOS acks", () => {
+  beforeEach(async () => {
+    await seedFamilyAB();
+    await seed((adb) => setDoc(doc(adb, "chats", FAM, "messages", "sos1"), {
+      senderId: A, senderName: "Alice", text: "SOS", type: "sos", createdAt: new Date(),
+    }));
+  });
+
+  const ackRef = (caller, uid = caller) => doc(db(caller), "chats", FAM, "messages", "sos1", "acks", uid);
+  const acksCol = (caller) => collection(db(caller), "chats", FAM, "messages", "sos1", "acks");
+  const seedAck = (uid) => seed((adb) => setDoc(doc(adb, "chats", FAM, "messages", "sos1", "acks", uid), { at: new Date() }));
+
+  it("member acks with their own uid", async () => {
+    await assertSucceeds(setDoc(ackRef(B), { at: serverTimestamp() }));
+  });
+
+  it("ack under another member's uid fails", async () => {
+    await assertFails(setDoc(ackRef(B, A), { at: serverTimestamp() }));
+  });
+
+  it("non-member ack fails", async () => {
+    await assertFails(setDoc(ackRef(C), { at: serverTimestamp() }));
+  });
+
+  it("extra key fails", async () => {
+    await assertFails(setDoc(ackRef(B), { at: serverTimestamp(), note: "on my way" }));
+  });
+
+  it("missing at (empty doc) fails", async () => {
+    await assertFails(setDoc(ackRef(B), {}));
+  });
+
+  it("client Date (5 s old) fails", async () => {
+    await assertFails(setDoc(ackRef(B), { at: new Date(Date.now() - 5000) }));
+  });
+
+  it("update (incl. a second ack) and delete fail", async () => {
+    await seedAck(B);
+    await assertFails(setDoc(ackRef(B), { at: serverTimestamp() }));
+    await assertFails(updateDoc(ackRef(B), { at: serverTimestamp() }));
+    await assertFails(deleteDoc(ackRef(B)));
+  });
+
+  it("member reads acks (get + list), including another member's", async () => {
+    await seedAck(B);
+    await assertSucceeds(getDoc(ackRef(A, B)));
+    await assertSucceeds(getDocs(acksCol(A)));
+  });
+
+  it("non-member cannot read acks", async () => {
+    await seedAck(B);
+    await assertFails(getDoc(ackRef(C, B)));
+    await assertFails(getDocs(acksCol(C)));
+  });
+
+  it("ex-member loses read (and ack) access as soon as they leave", async () => {
+    await seedAck(A);
+    await assertSucceeds(getDocs(acksCol(B)));
+    const batch = writeBatch(db(B));
+    batch.update(doc(db(B), "families", FAM), { members: arrayRemove(B) });
+    batch.update(doc(db(B), "users", B), { familyId: null, updatedAt: serverTimestamp() });
+    await assertSucceeds(batch.commit());
+    await assertFails(getDoc(ackRef(B, A)));
+    await assertFails(getDocs(acksCol(B)));
+    await assertFails(setDoc(ackRef(B), { at: serverTimestamp() }));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Stage 4 — push token, check-in setting, SOS (DESIGN-SPEC §13)
 // ---------------------------------------------------------------------------
 describe("stage 4: push token, settings, SOS", () => {

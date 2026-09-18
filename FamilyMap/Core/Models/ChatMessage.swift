@@ -60,6 +60,14 @@ struct ChatMessage: Identifiable, Equatable {
         )
     }
 
+    /// Stage 9: an SOS older than this is no longer acknowledged (the server repeats for about 5 minutes).
+    static let sosAckWindow: TimeInterval = 10 * 60
+
+    /// Stage 9: an SOS from someone else, younger than `sosAckWindow`. Opening Pinny acknowledges it.
+    func needsSOSAck(myUid: String, now: Date = Date()) -> Bool {
+        type == .sos && senderId != myUid && now.timeIntervalSince(createdAt) < Self.sosAckWindow
+    }
+
     /// "Mum" from "Mum Kim"; the label above a run of bubbles.
     var senderFirstName: String {
         senderName.split(separator: " ").first.map(String.init) ?? senderName

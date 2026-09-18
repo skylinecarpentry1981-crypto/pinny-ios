@@ -15,11 +15,14 @@ struct PushRoute: Equatable {
     let type: String?
     let uid: String?
     let familyId: String?
+    /// SOS pushes only (Stage 9): the SOS message to acknowledge.
+    let messageId: String?
 
     init(userInfo: [AnyHashable: Any]) {
         type = userInfo["type"] as? String
         uid = userInfo["uid"] as? String
         familyId = userInfo["familyId"] as? String
+        messageId = userInfo["messageId"] as? String
     }
 }
 
@@ -30,6 +33,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         didSet { deliverPendingPush() }
     }
     @MainActor private var pendingPush: PushRoute?
+    /// Stage 9: an SOS push shown as a banner while Pinny is open; AppState acknowledges it.
+    @MainActor var onSOSPresented: (@MainActor (PushRoute) -> Void)?
 
     func application(
         _ application: UIApplication,
@@ -97,6 +102,12 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
     ) {
         let route = PushRoute(userInfo: notification.request.content.userInfo)
         completionHandler(route.type == "sos" ? [.banner, .sound, .list] : [.banner, .list])
+        // Stage 9: Pinny is open, so the user sees the banner and hears the siren: acknowledge.
+        guard route.type == "sos" else { return }
+        Task { @MainActor in
+            guard UIApplication.shared.applicationState == .active else { return }
+            self.onSOSPresented?(route)
+        }
     }
 
     /// A tap: AppState opens the Map tab and, when the sender is in my family, selects them (§13.5).
