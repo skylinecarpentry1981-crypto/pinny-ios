@@ -1128,6 +1128,22 @@ def cmd_resend_tester(args):
         return 1
 
 
+def cmd_cancel_invite(args):
+    """Cancel a pending team invitation (nothing happens if there is none)."""
+    c = load_client()
+    email = (args.email or "").strip()
+    shown = mask_email(email)
+    pending = [i for i in c.get_all("/v1/userInvitations", {"limit": 200})
+               if (i["attributes"].get("email") or "").lower() == email.lower()]
+    if not pending:
+        print(f"{shown}: no pending invitation")
+        return 0
+    for inv in pending:
+        c.request("DELETE", f"/v1/userInvitations/{inv['id']}")
+        print(f"{shown}: pending invitation cancelled")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1152,6 +1168,9 @@ def main():
     p_resend = sub.add_parser("resend-tester", help="re-send the TestFlight invitation email to a tester")
     p_resend.add_argument("--email", default="")
     p_resend.set_defaults(func=cmd_resend_tester)
+    p_cancel = sub.add_parser("cancel-invite", help="cancel a pending team invitation")
+    p_cancel.add_argument("--email", default="")
+    p_cancel.set_defaults(func=cmd_cancel_invite)
     p_listing = sub.add_parser("listing", help="fill the App Store listing (no submission, no build, no pricing)")
     p_listing.add_argument("--contact-phone", default="", help="App Review contact phone (never printed)")
     p_listing.set_defaults(func=cmd_listing)

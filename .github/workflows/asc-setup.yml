@@ -39,7 +39,7 @@ on:
       command:
         description: "setup (default), status (read-only: builds, testers, in-app purchases), family-link (external TestFlight group + review submission) or listing (App Store listing texts; no submission)"
         type: choice
-        options: [setup, status, family-link, invite-user, listing, resend-tester]
+        options: [setup, status, family-link, invite-user, listing, resend-tester, cancel-invite]
         default: setup
       contact_phone:
         description: "family-link / listing: review contact phone, e.g. +61400000000 (needed once; never printed)"
@@ -105,6 +105,8 @@ jobs:
           done
           if [ "$ASC_COMMAND" = "status" ]; then
             python scripts/asc_setup.py status
+          elif [ "$ASC_COMMAND" = "cancel-invite" ]; then
+            python scripts/asc_setup.py cancel-invite --email "$TESTER_EMAIL"
           elif [ "$ASC_COMMAND" = "resend-tester" ]; then
             python scripts/asc_setup.py resend-tester --email "$TESTER_EMAIL"
           elif [ "$ASC_COMMAND" = "invite-user" ]; then
