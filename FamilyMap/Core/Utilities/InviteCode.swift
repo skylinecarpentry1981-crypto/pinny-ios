@@ -15,6 +15,11 @@ enum InviteCode {
         raw.uppercased().filter { !$0.isWhitespace }
     }
 
+    /// For the text field: uppercase, keep ASCII letters and digits only, cap at 6.
+    static func sanitizeTyped(_ raw: String) -> String {
+        String(raw.uppercased().filter { $0.isASCII && ($0.isLetter || $0.isNumber) }.prefix(length))
+    }
+
     static func isValid(_ code: String) -> Bool {
         code.count == length && code.allSatisfy { alphabet.contains($0) }
     }

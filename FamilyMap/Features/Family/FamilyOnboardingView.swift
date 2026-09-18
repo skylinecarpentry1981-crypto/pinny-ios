@@ -183,7 +183,12 @@ struct FamilyOnboardingView: View {
             }
 
             card(title: "Join a family") {
-                TextField("Invite code", text: $viewModel.inviteCode)
+                // Sanitised in the binding's setter. Rewriting the text from `.onChange` made iOS drop
+                // keystrokes on device (only characters that needed no rewrite were accepted).
+                TextField("Invite code", text: Binding(
+                    get: { viewModel.inviteCode },
+                    set: { viewModel.inviteCode = InviteCode.sanitizeTyped($0) }
+                ))
                     .textInputAutocapitalization(.characters)
                     .keyboardType(.asciiCapable)
                     .autocorrectionDisabled()
@@ -191,9 +196,6 @@ struct FamilyOnboardingView: View {
                     .textFieldStyle(.roundedBorder)
                     .focused($focusedField, equals: .code)
                     .submitLabel(.join)
-                    .onChange(of: viewModel.inviteCode) { newValue in
-                        viewModel.sanitizeInviteCode(newValue)
-                    }
                     .onSubmit { Task { await viewModel.joinFamily(appState: appState) } }
                 PrimaryButton(
                     title: "Join family",
