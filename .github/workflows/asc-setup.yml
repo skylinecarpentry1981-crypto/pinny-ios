@@ -39,7 +39,7 @@ on:
       command:
         description: "setup (default), status (read-only: builds, testers, in-app purchases), family-link (external TestFlight group + review submission) or listing (App Store listing texts; no submission)"
         type: choice
-        options: [setup, status, family-link, invite-user, listing]
+        options: [setup, status, family-link, invite-user, listing, resend-tester]
         default: setup
       contact_phone:
         description: "family-link / listing: review contact phone, e.g. +61400000000 (needed once; never printed)"
