@@ -252,6 +252,13 @@ def ensure_tester(c, app_id, email):
         fail_line(f"Could not add tester {shown} to \"{BETA_GROUP}\"", e)
         print("    Internal testers must already be App Store Connect users of this team "
               "(Users and Access). Use the Apple ID email of that user.")
+        try:
+            users = c.get_all("/v1/users", {"limit": 200})
+            print("    Team users (masked): " + ", ".join(
+                f"{mask_email(u['attributes'].get('username') or '')} [{'/'.join(u['attributes'].get('roles') or [])}]"
+                for u in users) or "none")
+        except ApiError as e2:
+            print(f"    (could not list team users: {e2})")
         return "FAILED"
 
 
