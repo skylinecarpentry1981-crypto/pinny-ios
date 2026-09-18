@@ -21,7 +21,7 @@ Two manual workflows in the private repo `skylinecarpentry1981-crypto/pinny-ios`
 
 | Workflow | Runs on | What it does |
 |---|---|---|
-| `asc-setup.yml` (`scripts/asc_setup.py`) | Linux | Registers bundle ID `com.skyline.pinny` and turns on Push Notifications, Sign in with Apple and Time Sensitive Notifications. Counts registered iPhones and prints the app's numeric **Apple ID**, or `APP RECORD MISSING`. With `tester_email`, it adds that person to the internal TestFlight group **Owner** (access to all builds). Safe to re-run. |
+| `asc-setup.yml` (`scripts/asc_setup.py`) | Linux | Registers bundle ID `com.skyline.pinny` and turns on Push Notifications, Sign in with Apple and Time Sensitive Notifications. Counts registered iPhones and prints the app's numeric **Apple ID**, or `APP RECORD MISSING`. With `tester_email`, it adds that person to the internal TestFlight group **Owner** (access to all builds). `command=family-link` sets up external TestFlight for the family and submits the newest build for Beta App Review (section D). `command=status` is read-only. Safe to re-run. |
 | `ios-testflight.yml` | macOS 26, newest Xcode 26.x | XcodeGen → archive → App Store export → checks `aps-environment = production` → uploads. Build number = run number + 100. Untick `upload` for a dry run. |
 
 **Before you start:**
@@ -220,18 +220,35 @@ Hardcoding `production` would break Debug signing, so it isn't done.
 
 ## D. TestFlight for the family
 
-1. **External group "Family" (recommended for a non-technical family).** App Store Connect → Pinny Family Map → **TestFlight → External Testing → +** → "Family".
-   Add each person's name and Apple ID email. They get an email, install **TestFlight** from the App Store, and tap the invite. That's it: no developer-team membership, and they never see App Store Connect.
+**One command (Path A).** After a build has been uploaded and processed (`status` shows it as `VALID`), Claude runs:
+
+```powershell
+gh workflow run asc-setup.yml -R skylinecarpentry1981-crypto/pinny-ios -f command=family-link -f contact_phone=<owner phone> -f contact_first_name=<first> -f contact_last_name=<last>
+```
+
+`family-link` (`scripts/asc_setup.py`) does D1, D2 and D4 in one go and is safe to re-run:
+
+- creates the external group **Family** with a **public link** on (no tester limit, feedback on), or reuses it, and prints `PUBLIC LINK: https://testflight.apple.com/join/…`;
+- writes the TestFlight test information (en-AU; an existing en-US entry is updated instead): what to test, feedback email `tony810704@hotmail.com`, privacy policy URL `https://pinny-family-4vea.web.app/privacy`;
+- writes the Beta App Review contact (email, plus the name and phone from the inputs; needed once, never printed) and the review notes ("Sign in with your own Google or Apple account. Creating a family needs the Family Pass in-app purchase; in TestFlight/sandbox this is free. Location is shared only while the app is open …"), with *demo account required: no*;
+- takes the newest processed build (or `-f build=<number>`), sets its What to Test text, answers export compliance (`usesNonExemptEncryption = false`) if the build still asks, adds it to **Family**, submits it for Beta App Review, and prints `BETA REVIEW STATE: WAITING_FOR_REVIEW | IN_REVIEW | APPROVED | REJECTED`.
+
+`gh workflow run asc-setup.yml -R skylinecarpentry1981-crypto/pinny-ios -f command=status` shows the public link and the latest build's review state at any time.
+
+**Sharing with the family:** once the state is `APPROVED`, send everyone the public link. They install **TestFlight** from the App Store, open the link and tap Accept: no Apple ID emails to collect, no developer-team membership, and they never see App Store Connect.
+
+The manual equivalents, for reference:
+
+1. **External group "Family".** App Store Connect → Pinny Family Map → **TestFlight → External Testing → +** → "Family" → enable the public link. (Or add each person's name and Apple ID email; they get an email invite instead.)
 2. **Test Information** (TestFlight → Test Information), needed before the first external build:
    - Beta description, feedback email, and **Privacy Policy URL** = `https://PROJECT_ID.web.app/privacy` (B8). External testing requires it.
-   - **Sign-in required: yes.** Give a demo **email + password**, because the reviewer can't use Sign in with Apple as you.
-   - Review notes, e.g.: "Pinny shares location only when the app is opened or Refresh / Check in is tapped. There is no background tracking. Sign in with the demo account to see the demo family."
-3. **Demo account + demo family for the reviewer** (owner, before the first build). Never use real family accounts:
+   - **Sign-in required: no** (testers use their own Google or Apple account). The review notes explain the Family Pass and that location is shared only while the app is open.
+3. **Demo account + demo family** are not needed for Beta App Review (the notes say sign-in is with the tester's own account), but they are for the App Store review in G6 / H9. Never use real family accounts:
    - Create two email/password accounts in Pinny with addresses you control, e.g. `review1@…` and `review2@…`.
    - Account 1 creates the family "Review Family". Account 2 joins it with the invite code and shares a location once, so the map shows a pin.
    - Add one saved place ("Home") so the "At Home" label can be seen.
 4. The **first build goes to Beta App Review**, which is usually quick. After approval, the build becomes available to the group. Later builds of the same version may skip a full review.
-   - **Path A:** the upload doesn't submit anything for review. In App Store Connect → TestFlight, open the build and add the **Family** group; that asks you to submit it for Beta App Review.
+   - **Path A:** `family-link` above. By hand: in App Store Connect → TestFlight, open the build and add the **Family** group; that asks you to submit it for Beta App Review.
    - **Path B:** Codemagic's `ios-testflight` workflow submits the build and adds it to `Family` (`beta_groups`).
 5. **Faster alternative: Internal testing** (Path A as is, or Codemagic `ios-internal`). No review, and a build is available minutes after processing. But every tester has to be added to your App Store Connect team with a role (up to 100 people), so each family member gets an App Store Connect login. That's fine for one technical helper; for the family, External is simpler.
 6. **Builds expire after 90 days.** Start a new build before then (Path A: `ios-testflight`). Testers are notified and update in TestFlight.
@@ -239,7 +256,7 @@ Hardcoding `production` would break Debug signing, so it isn't done.
 
 ## E. Privacy manifest and pages
 
-- `FamilyMap/Resources/PrivacyInfo.xcprivacy` declares no tracking, and seven collected data types: Precise Location, Name, Email Address, User ID, Device ID (the push notification token, declared to be safe), Other User Content (chat) and Other Data (battery). All are linked to the user, used for App Functionality, and not used for tracking.
+- `FamilyMap/Resources/PrivacyInfo.xcprivacy` declares no tracking, and eight collected data types: Precise Location, Name, Email Address, User ID, Device ID (the push notification token, declared to be safe), Other User Content (chat), Other Data (battery) and Photos or Videos (the optional profile photo, Stage 8). All are linked to the user, used for App Functionality, and not used for tracking.
   - It declares no required-reason APIs, because our Swift uses none today. Re-check before each release, e.g. if `UserDefaults` / `@AppStorage` is added, declare `CA92.1`.
   - Firebase ships its own manifests.
 - `firebase/hosting/privacy.html` and `support.html` restate [BACKEND-SETUP §9](BACKEND-SETUP.md#9-location-data-privacy). If the data model changes, update both in the same change.
@@ -275,8 +292,8 @@ Hardcoding `production` would break Debug signing, so it isn't done.
 | 10 | B8 deploy rules, functions, hosting (`firebase deploy --only …,hosting`) | Claude, after owner OK | To do |
 | 11 | Path B only: C1–C5 GitHub + Codemagic key, certificate, profile, plist secret | Owner | Not needed for Path A |
 | 12 | Path B only: C6 set `APP_STORE_APPLE_ID` (the ID `asc-setup` prints) | Claude | Not needed for Path A |
-| 13 | D1–D3 Family group, test information + privacy URL, demo accounts | Owner | To do |
-| 14 | First external build → Beta App Review → family installs (Path A: add the build to "Family", D4) | Owner | To do |
+| 13 | D1–D2 Family group + public link, test information + privacy URL, review contact/notes (`asc-setup` `command=family-link`) | Claude (owner gives contact name + phone once) | To do |
+| 14 | First external build → Beta App Review → family installs via the public link (`family-link` submits it, D4) | Claude; Owner shares the link | To do |
 | 15 | New build before the 90-day expiry | Owner / Claude | Ongoing |
 | H0 | Stage 7 backend: rules (`pass`, `passes`, family create gate), `redeemFamilyPass`, `appStoreNotifications`, Apple root certs, tests | Claude | Done |
 | H1 | Paid Apps Agreement: agree, bank account, tax forms, contact info → status Active | Owner (Account Holder) | Done (already active from earlier apps) |
@@ -289,6 +306,9 @@ Hardcoding `production` would break Debug signing, so it isn't done.
 | H8 | Pricing and Availability: Free app, all countries | Owner | To do |
 | H9 | Demo account buys the pass in the sandbox; review notes updated | Owner | To do |
 | H10 | Deploy Stage 7 rules + functions + hosting (privacy page) — before H4/H6 | Claude, after owner OK | To do |
+| S8a | Stage 8 backend: `storage.rules` + `firebase.json`, `photoURL` rules tests, Storage rules tests, `onUserDeleted` photo clean-up, docs + privacy page | Claude | Done |
+| S8b | Create the Storage bucket once: Firebase console → Storage → Get started → Production mode → `australia-southeast1` ([BACKEND-SETUP §6.1](BACKEND-SETUP.md#61-cloud-storage-stage-8--profile-photos)) | Owner | To do |
+| S8c | Deploy Stage 8: `firebase deploy --only storage,functions,hosting` (Storage rules, `onUserDeleted`, privacy page) — after S8b | Claude, after owner OK | To do |
 
 ## G. Later: App Store release
 
@@ -310,6 +330,7 @@ This isn't needed for TestFlight. To go public, add the following in App Store C
    | User Content | Other User Content | family chat messages |
    | Other Data | Other Data Types | battery level, charging state |
    | Purchases | Purchase History | Family Pass: Apple transaction id tied to the account (H) |
+   | User Content | Photos or Videos | optional profile photo (`avatars/{uid}.jpg`, Stage 8; [BACKEND-SETUP §9](BACKEND-SETUP.md#9-location-data-privacy)) |
 6. **App Review information**: the same demo account + demo family as D3, a contact phone/email, and notes saying location is shared only while the app is open (open, Refresh / Check in, SOS), with no background tracking. The demo account must already hold a Family Pass (H9).
 7. Already in place: in-app account deletion (Guideline 5.1.1(v)), Sign in with Apple next to email sign-in, "When In Use" location only, and the export compliance flag.
 8. Pick a build → **Add for Review** → release manually after approval.

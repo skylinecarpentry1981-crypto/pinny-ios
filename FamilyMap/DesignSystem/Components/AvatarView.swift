@@ -1,6 +1,8 @@
 import SwiftUI
 
 /// Circular photo via AsyncImage, falling back to initials.
+/// Initials show while the photo loads and if it fails, so a row never goes blank. AsyncImage uses
+/// the shared URLSession, whose URLCache keeps the JPEG for later appearances (STAGE-8-CONTRACT §3).
 struct AvatarView: View {
     let name: String
     var photoURL: String? = nil
@@ -10,11 +12,14 @@ struct AvatarView: View {
         Group {
             if let photoURL, let url = URL(string: photoURL) {
                 AsyncImage(url: url) { phase in
-                    if let image = phase.image {
+                    switch phase {
+                    case .success(let image):
                         image
                             .resizable()
                             .scaledToFill()
-                    } else {
+                    case .empty, .failure:
+                        initials
+                    @unknown default:
                         initials
                     }
                 }

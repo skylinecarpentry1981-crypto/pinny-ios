@@ -11,6 +11,13 @@ ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8 (full .p8 text). Never prints them.
       existing app record) adds that person to the internal TestFlight group
       "Owner". Safe to run again: existing items are reused.
 
+  family-link [--contact-phone N] [--contact-first-name X] [--contact-last-name Y] [--build VERSION]
+      External TestFlight for the family in one go: external group "Family"
+      with a public link, TestFlight test information (en-AU), Beta App Review
+      contact + notes, then the newest processed build (or --build) gets its
+      What to Test text, export compliance, the Family group and a Beta App
+      Review submission. Prints the public link. Safe to run again.
+
   revoke-runner-certs
       CI clean-up. `xcodebuild archive -allowProvisioningUpdates` on a fresh
       runner creates a new Apple Development certificate whose private key only
@@ -38,6 +45,29 @@ API = "https://api.appstoreconnect.apple.com"
 BUNDLE_ID = "com.skyline.pinny"
 BUNDLE_NAME = "Pinny"
 BETA_GROUP = "Owner"
+
+# family-link: external TestFlight (docs/TESTFLIGHT.md, section D).
+FAMILY_GROUP = "Family"
+FEEDBACK_EMAIL = "tony810704@hotmail.com"
+PRIVACY_URL = "https://pinny-family-4vea.web.app/privacy"
+# Preferred locale first; an existing en-US localization (the app's primary
+# language seed) is updated instead of creating a second one.
+LOCALES = ("en-AU", "en-US")
+# TestFlight "What to Test" (betaAppLocalizations.description), from docs/APP-STORE-LISTING.md.
+BETA_DESCRIPTION = (
+    "Pinny is a private map for your family. Please test: sign in (Apple, Google or email), "
+    "create a family or join one with the invite code, open the map and tap Refresh or Check in "
+    "to share your location, hold the SOS button, send a few family chat messages, save a Place "
+    "such as Home or School, add a profile photo, and try Settings > Delete account on a throwaway "
+    "account. Location is shared only while the app is open: there is no background tracking."
+)
+REVIEW_NOTES = (
+    "Sign in with your own Google or Apple account. Creating a family needs the Family Pass "
+    "in-app purchase; in TestFlight/sandbox this is free. Location is shared only while the app "
+    "is open (open, Refresh/Check in, SOS): no background tracking. The emergency-call button "
+    "shows your region's number."
+)
+WHATS_NEW = "Family map, SOS, chat and Places. Location is shared only while the app is open."
 
 # (capabilityType, label, settings). Must match the entitlements in project.yml.
 # USERNOTIFICATIONS_TIMESENSITIVE is accepted by the API (fastlane uses it) but
@@ -262,12 +292,255 @@ def ensure_tester(c, app_id, email):
         return "FAILED"
 
 
-def write_summary(rows):
+# ---------------------------------------------------------- family-link ----
+# Endpoints: https://developer.apple.com/documentation/appstoreconnectapi
+#   POST/PATCH /v1/betaGroups, GET /v1/betaGroups (filter[app], filter[name]),
+#   GET /v1/apps/{id}/betaAppLocalizations, POST/PATCH /v1/betaAppLocalizations,
+#   GET /v1/apps/{id}/betaAppReviewDetail, PATCH /v1/betaAppReviewDetails/{id},
+#   GET /v1/builds (filter[processingState], sort=-uploadedDate), PATCH /v1/builds/{id},
+#   GET /v1/builds/{id}/betaBuildLocalizations, POST/PATCH /v1/betaBuildLocalizations,
+#   POST /v1/betaGroups/{id}/relationships/builds (204),
+#   POST /v1/betaAppReviewSubmissions, GET /v1/builds/{id}/betaAppReviewSubmission.
+
+def ensure_family_group(c, app_id):
+    """External group with a public link. Returns the group resource (attributes incl. publicLink)."""
+    groups = c.get_all("/v1/betaGroups", {"filter[app]": app_id, "filter[name]": FAMILY_GROUP, "limit": 200})
+    group = next((g for g in groups if g["attributes"].get("name") == FAMILY_GROUP), None)
+    if group and group["attributes"].get("isInternalGroup"):
+        raise ApiError(0, [{"code": "GROUP_IS_INTERNAL",
+                            "detail": f"\"{FAMILY_GROUP}\" exists but is an INTERNAL group. Rename or delete it "
+                                      "in App Store Connect > TestFlight, then run again."}])
+    wanted = {"publicLinkEnabled": True, "publicLinkLimitEnabled": False, "feedbackEnabled": True}
+    if not group:
+        body = {"data": {
+            "type": "betaGroups",
+            "attributes": {"name": FAMILY_GROUP, "isInternalGroup": False, **wanted},
+            "relationships": {"app": {"data": {"type": "apps", "id": app_id}}},
+        }}
+        group = c.request("POST", "/v1/betaGroups", body=body)["data"]
+        print(f"Beta group \"{FAMILY_GROUP}\": created (external, public link on)")
+    elif any(group["attributes"].get(k) != v for k, v in wanted.items()):
+        group = c.request("PATCH", f"/v1/betaGroups/{group['id']}",
+                          body={"data": {"type": "betaGroups", "id": group["id"], "attributes": wanted}})["data"]
+        print(f"Beta group \"{FAMILY_GROUP}\": exists, public link turned on")
+    else:
+        print(f"Beta group \"{FAMILY_GROUP}\": exists (external, public link on)")
+    return group
+
+
+def pick_locale(items):
+    """Prefer en-AU, then en-US, among existing localization resources."""
+    for loc in LOCALES:
+        hit = next((x for x in items if x["attributes"].get("locale") == loc), None)
+        if hit:
+            return hit
+    return None
+
+
+def ensure_beta_app_localization(c, app_id):
+    """TestFlight test information: description (what to test), feedback email, privacy URL."""
+    attrs = {"description": BETA_DESCRIPTION, "feedbackEmail": FEEDBACK_EMAIL, "privacyPolicyUrl": PRIVACY_URL}
+    existing = c.get_all(f"/v1/apps/{app_id}/betaAppLocalizations", {"limit": 200})
+    target = pick_locale(existing)
+    if target:
+        c.request("PATCH", f"/v1/betaAppLocalizations/{target['id']}",
+                  body={"data": {"type": "betaAppLocalizations", "id": target["id"], "attributes": attrs}})
+        locale = target["attributes"].get("locale")
+        print(f"Test information ({locale}): updated (feedback {mask_email(FEEDBACK_EMAIL)}, privacy URL set)")
+    else:
+        locale = LOCALES[0]
+        c.request("POST", "/v1/betaAppLocalizations", body={"data": {
+            "type": "betaAppLocalizations",
+            "attributes": {"locale": locale, **attrs},
+            "relationships": {"app": {"data": {"type": "apps", "id": app_id}}},
+        }})
+        print(f"Test information ({locale}): created (feedback {mask_email(FEEDBACK_EMAIL)}, privacy URL set)")
+    # Beta App Review refuses to submit while any localization lacks a description.
+    for other in existing:
+        if other is target or other["attributes"].get("description"):
+            continue
+        c.request("PATCH", f"/v1/betaAppLocalizations/{other['id']}",
+                  body={"data": {"type": "betaAppLocalizations", "id": other["id"],
+                                 "attributes": {"description": BETA_DESCRIPTION}}})
+        print(f"Test information ({other['attributes'].get('locale')}): description filled in")
+    return locale
+
+
+def ensure_review_detail(c, app_id, phone, first, last):
+    """Beta App Review contact + notes. Singleton per app; empty inputs leave existing values alone."""
+    detail = c.request("GET", f"/v1/apps/{app_id}/betaAppReviewDetail")["data"]
+    attrs = {"contactEmail": FEEDBACK_EMAIL, "demoAccountRequired": False, "notes": REVIEW_NOTES}
+    for key, val in (("contactPhone", phone), ("contactFirstName", first), ("contactLastName", last)):
+        if val:
+            attrs[key] = val
+    detail = c.request("PATCH", f"/v1/betaAppReviewDetails/{detail['id']}",
+                       body={"data": {"type": "betaAppReviewDetails", "id": detail["id"], "attributes": attrs}})["data"]
+    a = detail["attributes"]
+    missing = [k for k in ("contactFirstName", "contactLastName", "contactPhone") if not a.get(k)]
+    print(f"Beta App Review contact: {mask_email(a.get('contactEmail') or '')}, "
+          f"name {'set' if not missing or 'contactFirstName' not in missing else 'MISSING'}, "
+          f"phone {'set' if 'contactPhone' not in missing else 'MISSING'}; notes set")
+    if missing:
+        print(f"::warning::Beta App Review needs {', '.join(missing)}. Re-run with the contact_* inputs.")
+    return not missing
+
+
+def pick_build(c, app_id, version):
+    params = {"filter[app]": app_id, "filter[processingState]": "VALID", "filter[expired]": "false",
+              "sort": "-uploadedDate", "limit": 1}
+    if version:
+        params["filter[version]"] = version
+    builds = c.get_all("/v1/builds", params)
+    return builds[0] if builds else None
+
+
+def ensure_whats_new(c, build_id):
+    existing = c.get_all(f"/v1/builds/{build_id}/betaBuildLocalizations", {"limit": 200})
+    target = pick_locale(existing)
+    if target:
+        c.request("PATCH", f"/v1/betaBuildLocalizations/{target['id']}",
+                  body={"data": {"type": "betaBuildLocalizations", "id": target["id"],
+                                 "attributes": {"whatsNew": WHATS_NEW}}})
+        print(f"  What to Test ({target['attributes'].get('locale')}): updated")
+    else:
+        c.request("POST", "/v1/betaBuildLocalizations", body={"data": {
+            "type": "betaBuildLocalizations",
+            "attributes": {"locale": LOCALES[0], "whatsNew": WHATS_NEW},
+            "relationships": {"build": {"data": {"type": "builds", "id": build_id}}},
+        }})
+        print(f"  What to Test ({LOCALES[0]}): created")
+
+
+def ensure_export_compliance(c, build):
+    if build["attributes"].get("usesNonExemptEncryption") is None:
+        c.request("PATCH", f"/v1/builds/{build['id']}",
+                  body={"data": {"type": "builds", "id": build["id"],
+                                 "attributes": {"usesNonExemptEncryption": False}}})
+        print("  Export compliance: answered (usesNonExemptEncryption=false)")
+    else:
+        print(f"  Export compliance: already answered (usesNonExemptEncryption={build['attributes']['usesNonExemptEncryption']})")
+
+
+def review_state(c, build_id):
+    """betaReviewState of the build's submission, or None if never submitted."""
+    try:
+        sub = c.request("GET", f"/v1/builds/{build_id}/betaAppReviewSubmission")
+    except ApiError as e:
+        if e.status == 404:
+            return None
+        raise
+    return (sub.get("data") or {}).get("attributes", {}).get("betaReviewState")
+
+
+def submit_build(c, group_id, build_id):
+    try:
+        c.request("POST", f"/v1/betaGroups/{group_id}/relationships/builds",
+                  body={"data": [{"type": "builds", "id": build_id}]})
+        print(f"  Added to \"{FAMILY_GROUP}\"")
+    except ApiError as e:
+        if e.status != 409:
+            raise
+        print(f"  Already in \"{FAMILY_GROUP}\" (409)")
+    state = review_state(c, build_id)
+    if state in (None, "REJECTED"):
+        try:
+            c.request("POST", "/v1/betaAppReviewSubmissions", body={"data": {
+                "type": "betaAppReviewSubmissions",
+                "relationships": {"build": {"data": {"type": "builds", "id": build_id}}},
+            }})
+            print("  Submitted for Beta App Review")
+        except ApiError as e:
+            if e.status != 409:
+                raise
+            print(f"  Beta App Review submission not accepted (409: {e}); checking current state")
+    else:
+        print("  Already submitted for Beta App Review")
+    return review_state(c, build_id) or "not submitted"
+
+
+def cmd_family_link(args):
+    c = load_client()
+    ok = True
+    rows = []
+    app = find_app(c)
+    if not app:
+        print("::error::APP RECORD MISSING - create it in App Store Connect first (docs/TESTFLIGHT.md, A5).")
+        return 1
+    app_id = app["id"]
+    print(f"App: {app['attributes'].get('name')} (Apple ID {app_id})")
+
+    print("== External group ==")
+    group = None
+    try:
+        group = ensure_family_group(c, app_id)
+        link = group["attributes"].get("publicLink") or "(not issued yet)"
+        print(f"PUBLIC LINK: {link}")
+        rows.append(("Family group public link", link))
+    except ApiError as e:
+        fail_line(f"Could not set up beta group \"{FAMILY_GROUP}\"", e)
+        rows.append(("Family group", "FAILED"))
+        ok = False
+
+    print("== Test information ==")
+    try:
+        loc = ensure_beta_app_localization(c, app_id)
+        rows.append(("Test information", f"{loc}: description, feedback email, privacy URL"))
+    except ApiError as e:
+        fail_line("Could not write TestFlight test information", e)
+        rows.append(("Test information", "FAILED"))
+        ok = False
+
+    print("== Beta App Review contact ==")
+    try:
+        complete = ensure_review_detail(c, app_id, args.contact_phone.strip(), args.contact_first_name.strip(),
+                                        args.contact_last_name.strip())
+        rows.append(("Beta App Review contact", "complete" if complete else "INCOMPLETE - pass contact_* inputs"))
+    except ApiError as e:
+        fail_line("Could not write Beta App Review contact/notes", e)
+        rows.append(("Beta App Review contact", "FAILED"))
+        ok = False
+
+    print("== Build ==")
+    build = None
+    try:
+        build = pick_build(c, app_id, args.build.strip())
+    except ApiError as e:
+        fail_line("Could not list builds", e)
+        ok = False
+    if not build:
+        want = f"build {args.build.strip()}" if args.build.strip() else "a processed (VALID) build"
+        print(f"::warning::No {want} found. Run ios-testflight.yml, wait for processing, then run family-link again.")
+        rows.append(("Build", "none processed yet"))
+        write_summary(rows, "TestFlight for the family")
+        return 0 if ok else 1
+    ba = build["attributes"]
+    print(f"Build {ba.get('version')} (uploaded {ba.get('uploadedDate')})")
+    state = "FAILED"
+    try:
+        ensure_whats_new(c, build["id"])
+        ensure_export_compliance(c, build)
+        if group:
+            state = submit_build(c, group["id"], build["id"])
+        else:
+            state = review_state(c, build["id"]) or "not submitted"
+            print("  Skipped group/submission because the Family group failed above")
+    except ApiError as e:
+        fail_line(f"Could not prepare or submit build {ba.get('version')}", e)
+        ok = False
+    print(f"BETA REVIEW STATE: {state}")
+    rows.append((f"Build {ba.get('version')}", f"betaReviewState **{state}**"))
+
+    write_summary(rows, "TestFlight for the family")
+    print("== Done ==" if ok else "== Finished with errors (see ::error:: lines above) ==")
+    return 0 if ok else 1
+
+
+def write_summary(rows, title="App Store Connect setup"):
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not path:
         return
     with open(path, "a", encoding="utf-8") as f:
-        f.write("### App Store Connect setup\n\n| Item | Result |\n|---|---|\n")
+        f.write(f"### {title}\n\n| Item | Result |\n|---|---|\n")
         for k, v in rows:
             f.write(f"| {k} | {v} |\n")
 
@@ -407,12 +680,19 @@ def cmd_status(_args):
     for b in builds:
         a = b["attributes"]
         print(f"  build {a.get('version')}: {a.get('processingState')} (uploaded {a.get('uploadedDate')}, expired={a.get('expired')})")
+    if builds:
+        try:
+            print(f"  latest build betaReviewState: {review_state(c, builds[0]['id']) or 'not submitted'}")
+        except ApiError as e:
+            print(f"  could not read beta review state: {e}")
     print("== TestFlight groups ==")
     for g in c.get_all("/v1/betaGroups", {"filter[app]": app_id, "limit": 200}):
         ga = g["attributes"]
         testers = c.get_all(f"/v1/betaGroups/{g['id']}/betaTesters", {"limit": 200})
         names = ", ".join(mask_email(t["attributes"].get("email") or "") for t in testers) or "no testers"
         print(f"  {ga.get('name')} ({'internal' if ga.get('isInternalGroup') else 'external'}): {names}")
+        if ga.get("name") == FAMILY_GROUP:
+            print(f"    public link: {ga.get('publicLink') or '(off)'}")
     print("== In-app purchases ==")
     try:
         iaps = c.get_all(f"/v1/apps/{app_id}/inAppPurchasesV2", {"limit": 200})
@@ -436,6 +716,12 @@ def main():
     p_revoke.set_defaults(func=cmd_revoke_runner_certs)
     p_status = sub.add_parser("status", help="read-only: builds, TestFlight groups, in-app purchases")
     p_status.set_defaults(func=cmd_status)
+    p_family = sub.add_parser("family-link", help="external group 'Family' + public link, test info, review submission")
+    p_family.add_argument("--contact-phone", default="", help="Beta App Review contact phone (never printed)")
+    p_family.add_argument("--contact-first-name", default="")
+    p_family.add_argument("--contact-last-name", default="")
+    p_family.add_argument("--build", default="", help="build number to submit (default: newest processed build)")
+    p_family.set_defaults(func=cmd_family_link)
     args = parser.parse_args()
     sys.exit(args.func(args))
 

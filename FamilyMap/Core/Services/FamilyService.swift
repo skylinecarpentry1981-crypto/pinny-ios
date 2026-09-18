@@ -69,6 +69,8 @@ protocol FamilyService: AnyObject {
     func updateName(userId: String, name: String) async throws
     /// Settings › Check-in alerts. Affects check-in pushes only; SOS always sends.
     func updateNotifyOnCheckIn(userId: String, enabled: Bool) async throws
+    /// Stage 8 profile photo. `nil` clears it (`photoURL: null`, which `validUser` accepts).
+    func updatePhotoURL(userId: String, url: String?) async throws
     func createFamily(name: String) async throws -> Family
     func joinFamily(code: String) async throws -> Family
     func leaveFamily(_ family: Family) async throws
@@ -157,6 +159,17 @@ final class FirebaseFamilyService: FamilyService {
                 transaction.updateData(fields, forDocument: userRef)
                 return nil
             }
+        } catch {
+            throw FamilyError.from(error)
+        }
+    }
+
+    func updatePhotoURL(userId: String, url: String?) async throws {
+        do {
+            try await users.document(userId).updateData([
+                "photoURL": url.map { $0 as Any } ?? NSNull(),
+                "updatedAt": FieldValue.serverTimestamp()
+            ])
         } catch {
             throw FamilyError.from(error)
         }

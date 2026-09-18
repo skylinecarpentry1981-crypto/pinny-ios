@@ -82,6 +82,9 @@ protocol AuthService: AnyObject {
     var currentEmail: String? { get }
     /// Name to seed `users/{uid}.name` with on first sign-in (Apple/Google name or profile display name).
     var currentDisplayName: String? { get }
+    /// Google profile picture to seed `users/{uid}.photoURL` with on first sign-in (Stage 8).
+    /// Nil for Apple / email. Read only when the user doc is created, never to overwrite a photo.
+    var currentPhotoURL: String? { get }
     var currentProvider: AuthProvider { get }
 
     /// Calls `onChange` immediately with the current uid and again on every change.
@@ -105,6 +108,8 @@ final class FirebaseAuthService: AuthService {
     /// Apple only sends the full name on the very first sign-in; keep it until the user doc is created.
     /// Google sign-in seeds it from the Google profile name the same way.
     private var pendingDisplayName: String?
+    /// Google profile picture URL, kept like `pendingDisplayName` until the user doc is created.
+    private var pendingPhotoURL: String?
 
     var currentUserId: String? {
         Auth.auth().currentUser?.uid
@@ -116,6 +121,10 @@ final class FirebaseAuthService: AuthService {
 
     var currentDisplayName: String? {
         pendingDisplayName ?? Auth.auth().currentUser?.displayName
+    }
+
+    var currentPhotoURL: String? {
+        pendingPhotoURL
     }
 
     var currentProvider: AuthProvider {
@@ -167,6 +176,7 @@ final class FirebaseAuthService: AuthService {
         let google = try await googleCredential(presenting: viewController)
         // Set before signIn so the auth-state listener (which bootstraps users/{uid}) can read it.
         pendingDisplayName = google.displayName
+        pendingPhotoURL = google.photoURL
         do {
             let result = try await Auth.auth().signIn(with: google.credential)
             if let name = pendingDisplayName, result.user.displayName == nil {
@@ -176,6 +186,7 @@ final class FirebaseAuthService: AuthService {
             }
         } catch {
             pendingDisplayName = nil
+            pendingPhotoURL = nil
             let mapped = AuthError.from(error)
             throw (mapped == .network || mapped == .emailInUse) ? mapped : AuthError.googleFailed
         }
@@ -214,6 +225,7 @@ final class FirebaseAuthService: AuthService {
 
     func signOut() throws {
         pendingDisplayName = nil
+        pendingPhotoURL = nil
         try Auth.auth().signOut()
         // Forget the cached Google account too (no-op for Apple and email users).
         GIDSignIn.sharedInstance.signOut()
@@ -262,17 +274,18 @@ final class FirebaseAuthService: AuthService {
             throw mapped
         }
         pendingDisplayName = nil
+        pendingPhotoURL = nil
         // `delete()` already clears the session; this only guards against a stale cached user.
         try? Auth.auth().signOut()
         await MainActor.run { GIDSignIn.sharedInstance.signOut() }
     }
 
-    /// Runs the Google sheet and turns the result into a Firebase credential plus the profile name.
-    /// Main actor: GoogleSignIn presents UI from `viewController`.
+    /// Runs the Google sheet and turns the result into a Firebase credential plus the profile name
+    /// and picture. Main actor: GoogleSignIn presents UI from `viewController`.
     @MainActor
     private func googleCredential(
         presenting viewController: UIViewController
-    ) async throws -> (credential: AuthCredential, displayName: String?) {
+    ) async throws -> (credential: AuthCredential, displayName: String?, photoURL: String?) {
         // CLIENT_ID is only in GoogleService-Info.plist once Google sign-in is enabled in Firebase.
         guard let clientID = FirebaseApp.app()?.options.clientID else { throw AuthError.googleFailed }
         GIDSignIn.sharedInstance.configuration = GIDConfiguration(clientID: clientID)
@@ -291,7 +304,13 @@ final class FirebaseAuthService: AuthService {
             accessToken: result.user.accessToken.tokenString
         )
         let name = result.user.profile?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return (credential: credential, displayName: name.isEmpty ? nil : name)
+        // Nil when the Google account has no picture. Rules cap photoURL at 2048 chars.
+        let photoURL = result.user.profile?.imageURL(withDimension: 512)?.absoluteString
+        return (
+            credential: credential,
+            displayName: name.isEmpty ? nil : name,
+            photoURL: photoURL.flatMap { $0.count <= 2048 ? $0 : nil }
+        )
     }
 
     private static func displayName(from components: PersonNameComponents?) -> String? {

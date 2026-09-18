@@ -8,6 +8,14 @@
 #   gh workflow run asc-setup.yml -R skylinecarpentry1981-crypto/pinny-ios
 #   gh workflow run asc-setup.yml -R skylinecarpentry1981-crypto/pinny-ios -f tester_email=you@example.com
 #
+# family-link: external TestFlight for the family in one run (docs/TESTFLIGHT.md D).
+# Creates the external group "Family" with a public link, writes the test
+# information and Beta App Review contact/notes, and submits the newest
+# processed build for Beta App Review. Prints the public link.
+#
+#   gh workflow run asc-setup.yml -R skylinecarpentry1981-crypto/pinny-ios -f command=family-link \
+#     -f contact_phone=+61400000000 -f contact_first_name=Tony -f contact_last_name=Kim
+#
 # Script: scripts/asc_setup.py. Secrets: ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8.
 
 name: App Store Connect setup
@@ -21,10 +29,30 @@ on:
         required: false
         default: ""
       command:
-        description: "setup (default) or status (read-only: builds, testers, in-app purchases)"
+        description: "setup (default), status (read-only: builds, testers, in-app purchases) or family-link (external TestFlight group + review submission)"
         type: choice
-        options: [setup, status]
+        options: [setup, status, family-link]
         default: setup
+      contact_phone:
+        description: "family-link: Beta App Review contact phone, e.g. +61400000000 (needed once; never printed)"
+        type: string
+        required: false
+        default: ""
+      contact_first_name:
+        description: "family-link: Beta App Review contact first name (needed once)"
+        type: string
+        required: false
+        default: ""
+      contact_last_name:
+        description: "family-link: Beta App Review contact last name (needed once)"
+        type: string
+        required: false
+        default: ""
+      build:
+        description: "family-link: build number to submit (default: newest processed build)"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -58,9 +86,19 @@ jobs:
           # can't inject shell commands.
           TESTER_EMAIL: ${{ inputs.tester_email }}
           ASC_COMMAND: ${{ inputs.command }}
+          CONTACT_PHONE: ${{ inputs.contact_phone }}
+          CONTACT_FIRST_NAME: ${{ inputs.contact_first_name }}
+          CONTACT_LAST_NAME: ${{ inputs.contact_last_name }}
+          BUILD_VERSION: ${{ inputs.build }}
         run: |
           if [ "$ASC_COMMAND" = "status" ]; then
             python scripts/asc_setup.py status
+          elif [ "$ASC_COMMAND" = "family-link" ]; then
+            python scripts/asc_setup.py family-link \
+              --contact-phone "$CONTACT_PHONE" \
+              --contact-first-name "$CONTACT_FIRST_NAME" \
+              --contact-last-name "$CONTACT_LAST_NAME" \
+              --build "$BUILD_VERSION"
           else
             python scripts/asc_setup.py setup --tester-email "$TESTER_EMAIL"
           fi

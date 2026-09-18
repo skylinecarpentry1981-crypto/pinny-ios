@@ -104,5 +104,8 @@ targets:
       # Stage 7: callable `redeemFamilyPass` (StoreKit itself is a system framework, no entry needed).
       - package: Firebase
         product: FirebaseFunctions
+      # Stage 8: profile photos at avatars/{uid}.jpg (PhotosUI is a system framework, no entry needed).
+      - package: Firebase
+        product: FirebaseStorage
       - package: GoogleSignIn
         product: GoogleSignIn

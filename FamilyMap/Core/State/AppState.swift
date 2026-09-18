@@ -57,6 +57,8 @@ final class AppState: ObservableObject {
     let notificationService: NotificationService
     /// Family Pass (Stage 7): StoreKit purchase / restore + `redeemFamilyPass`.
     let passService: PassService
+    /// Profile photo (Stage 8): Storage upload + `users/{uid}.photoURL`.
+    let photoService: PhotoService
 
     private var didStart = false
     /// The first auth callback must always be handled, even when it reports nil (signed out).
@@ -100,6 +102,7 @@ final class AppState: ObservableObject {
         self.chatService = chatService
         self.notificationService = notificationService
         self.passService = passService ?? PassService()
+        self.photoService = PhotoService(familyService: familyService)
         locationSync.sharingUserId = { [weak self] in
             guard let self, self.authState == .ready else { return nil }
             return self.currentUser?.id
@@ -191,7 +194,8 @@ final class AppState: ObservableObject {
     private func createUserDocIfNeeded(uid: String) {
         guard !isCreatingUserDoc else { return }
         isCreatingUserDoc = true
-        let user = AppUser(id: uid, name: seedName())
+        // Google picture only on create (Stage 8); a photo the user chose later is never overwritten.
+        let user = AppUser(id: uid, name: seedName(), photoURL: authService.currentPhotoURL)
         Task {
             defer { isCreatingUserDoc = false }
             do {

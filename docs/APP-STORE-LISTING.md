@@ -47,7 +47,7 @@ PLACES
 Save Home, School, Work or Grandma's. When someone checks in from a saved place, the alert says where — "At School" — instead of a street address.
 
 MEMBER DRAWER
-Swipe up from the map to see everyone at a glance: who's where, when they last shared, and their battery level. Tap a name to open directions in Maps, message them or check in.
+Swipe up from the map to see everyone at a glance: who's where, when they last shared, and their battery level. Tap a name to open directions in Maps, message them or check in. Add a photo so family can spot you at a glance.
 
 FAMILY PASS
 Creating a family needs a Family Pass — a one-time purchase, tied to your Apple ID. Only the person who creates the family needs it. Everyone else joins free with the family's invite code, and there's no limit on how many people can join.
@@ -81,11 +81,12 @@ Notes for the questionnaire: the SOS feature and its call button (which shows yo
 
 ## 4. App Privacy
 
-Use the TESTFLIGHT.md §G table (all linked to the user, not used for tracking, App Functionality) **plus one row for Stage 7:**
+Use the TESTFLIGHT.md §G table (all linked to the user, not used for tracking, App Functionality) **plus one row each for Stage 7 and Stage 8:**
 
 | App Store Connect category | Data type | What it is in Pinny |
 |---|---|---|
 | Purchases | Purchase History | the Family Pass transaction ID, stored with the account to unlock creating a family |
+| Photos or Videos | Photos or Videos | the optional profile photo, picked from the photo library, stored with the account and shown to signed-in users of the app; deleted with the account |
 
 ## 5. What's New in 1.0
 
@@ -159,6 +160,6 @@ Submit the IAP with the 1.0 version (it can't be reviewed alone before the first
 ## 9. Open items for the owner
 
 1. ~~`Call 000` hard-coded for a worldwide release.~~ Decided: the emergency number follows the device region (DESIGN-SPEC §13.3). Frontend implements it; the copy above already says "your region's emergency number".
-2. Don't forget the extra App Privacy row in §4 (Purchases › Purchase History) — it is new in 1.0 and is not in the TESTFLIGHT §G table.
+2. Don't forget the extra App Privacy rows in §4 (Purchases › Purchase History; Photos or Videos) — both are new in 1.0 and are not in the TESTFLIGHT §G table.
 3. Confirm the copyright entity and the support email on the hosted support page.
 4. Fill in the demo password, the invite code and the contact details in App Store Connect only — never in this repo.

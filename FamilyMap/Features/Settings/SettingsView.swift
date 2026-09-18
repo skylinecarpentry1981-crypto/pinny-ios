@@ -1,11 +1,14 @@
 import SwiftUI
+import PhotosUI
 import UIKit
 import UserNotifications
 
 struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var passService: PassService
+    @EnvironmentObject private var photoService: PhotoService
     @StateObject private var deleteFlow = DeleteAccountViewModel()
+    @State private var selectedPhoto: PhotosPickerItem?
     @State private var showPaywall = false
     @State private var isRestoring = false
     @State private var notifyOnCheckIn = true
@@ -36,12 +39,26 @@ struct SettingsView: View {
             }
 
             Section("Profile") {
+                profilePhotoRow
+                PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                    Text("Change photo")
+                        .foregroundColor(Color.fm.accent)
+                }
+                .disabled(isUpdatingPhoto)
+                if appState.currentUser?.photoURL != nil {
+                    Button(role: .destructive) {
+                        removePhoto()
+                    } label: {
+                        Text("Remove photo")
+                            .foregroundColor(Color.fm.sosRedText)
+                    }
+                    .disabled(isUpdatingPhoto)
+                }
                 Button {
                     draftName = currentName
                     showNameAlert = true
                 } label: {
                     HStack(spacing: FMSpacing.md) {
-                        AvatarView(name: currentName, photoURL: appState.currentUser?.photoURL, size: 40)
                         Text("Display name")
                             .foregroundColor(Color.fm.textPrimary)
                         Spacer()
@@ -105,6 +122,11 @@ struct SettingsView: View {
         .onAppear {
             notifyOnCheckIn = appState.currentUser?.notifyOnCheckIn ?? true
         }
+        .onChange(of: selectedPhoto) { item in
+            if let item {
+                changePhoto(item)
+            }
+        }
         .onChange(of: appState.currentUser?.notifyOnCheckIn) { stored in
             // Follow the user doc (e.g. changed on another phone), but never mid-save.
             if let stored, !isSavingNotify {
@@ -150,6 +172,76 @@ struct SettingsView: View {
                 .environmentObject(appState)
                 .environmentObject(passService)
                 .presentationDetents([.large])
+        }
+    }
+
+    // MARK: - Profile photo (STAGE-8-CONTRACT §3)
+
+    private var isUpdatingPhoto: Bool {
+        photoService.state == .uploading
+    }
+
+    /// 80 pt avatar, centred; a spinner covers it while uploading or removing.
+    private var profilePhotoRow: some View {
+        HStack {
+            Spacer()
+            ZStack {
+                AvatarView(name: currentName, photoURL: appState.currentUser?.photoURL, size: 80)
+                if isUpdatingPhoto {
+                    Circle()
+                        .fill(Color.black.opacity(0.35))
+                    ProgressView()
+                        .tint(.white)
+                }
+            }
+            .frame(width: 80, height: 80)
+            .accessibilityLabel(isUpdatingPhoto ? "Updating photo" : "Profile photo")
+            Spacer()
+        }
+        .padding(.vertical, FMSpacing.sm)
+        .listRowBackground(Color.clear)
+    }
+
+    /// Reads the picked image (the picker runs out of process, no permission prompt), uploads it,
+    /// then clears the selection so the same photo can be picked again.
+    private func changePhoto(_ item: PhotosPickerItem) {
+        guard !isUpdatingPhoto else { return }
+        errorMessage = nil
+        Task { @MainActor in
+            defer { selectedPhoto = nil }
+            let data: Data?
+            do {
+                data = try await item.loadTransferable(type: Data.self)
+            } catch {
+                data = nil
+            }
+            guard let data else {
+                errorMessage = AppError.photoUpdateFailed
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+                return
+            }
+            await photoService.upload(imageData: data)
+            finishPhotoUpdate()
+        }
+    }
+
+    private func removePhoto() {
+        guard !isUpdatingPhoto else { return }
+        errorMessage = nil
+        Task { @MainActor in
+            await photoService.remove()
+            finishPhotoUpdate()
+        }
+    }
+
+    /// Success haptic, or the banner + error haptic; the users/{uid} listener updates the avatar itself.
+    private func finishPhotoUpdate() {
+        if case .failed(let message) = photoService.state {
+            errorMessage = message
+            photoService.reset()
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+        } else {
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
         }
     }
 

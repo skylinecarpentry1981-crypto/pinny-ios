@@ -149,7 +149,7 @@ firebase functions:log     # tail logs
 | `onUserTokenWritten` | `pushTokens/{uid}` written (create / update / delete) | **One phone, one account.** When `token` changes to a new non-empty string, queries `pushTokens` where `token ==` that token and deletes every doc except `{uid}` (one batch). This closes the offline sign-out gap: the old account's stale token doc is deleted as soon as the next account on the phone saves the same token. Loop-safe: `tokenChanged` in `functions/src/token.ts` (unit-tested) fires only when the token changed to a non-empty value, so deletes — this function's own writes, sign-out, dead-token clean-up, account deletion — do nothing, and so does re-saving the same token. The query uses the automatic single-field index. |
 | `onSOSMessage` | `chats/{familyId}/messages/{id}` created | `type == "sos"` only; normal chat messages return at once (**chat sends no pushes**, DESIGN-SPEC §13.5). Push to **every other member with a `pushTokens/{uid}` doc**, ignoring `notifyOnCheckIn`. Title "🚨 SOS from `{name}`" (`users/{senderId}.name`, falling back to `senderName`). Body "Tap to see where they are." when the SOS carried a location, else "Location unavailable." — "carried a location" = the sender's `lastLocation.src == "sos"` and its `updatedAt` is no more than 60 s before the message's `createdAt` (both server times; a location stamped at or after `createdAt` also counts). Decision logic: `sosBody` in `functions/src/sos.ts`, unit-tested. The message text and coordinates are never in the push. APNs priority 10, `sound: default`, `interruption-level: time-sensitive`. Data `{type:"sos", uid, familyId}`. |
 | `onFamilyUpdated` | `families/{familyId}` updated | Housekeeping after a client-side leave. If `members` is empty → `purgeFamily`: deletes the family and its `inviteCodes/{code}` (transaction, re-checks `members` is still empty), then `recursiveDelete` on `families/{familyId}/places` and `chats/{familyId}` (also swept when the family doc is already gone, so a half-finished earlier run leaves nothing behind). Else if `createdBy` is no longer in `members` → sets `createdBy = members[0]`. Loop-safe: purge removes the doc (no further updates); promotion re-fires once and then finds nothing to do. |
-| `onUserDeleted` | Firebase Auth user deleted | Removes uid from `families/{id}.members` (promoting `members[0]` if the creator left) and deletes `users/{uid}` and `pushTokens/{uid}` in one transaction; if the family is now empty, calls the same `purgeFamily` helper (idempotent with `onFamilyUpdated`). Then deletes every `passes/*` doc with `uid ==` the deleted uid (Stage 7; query on the automatic single-field index, one batch), releasing the Apple purchase for a re-created account. |
+| `onUserDeleted` | Firebase Auth user deleted | Removes uid from `families/{id}.members` (promoting `members[0]` if the creator left) and deletes `users/{uid}` and `pushTokens/{uid}` in one transaction; if the family is now empty, calls the same `purgeFamily` helper (idempotent with `onFamilyUpdated`). Then deletes every `passes/*` doc with `uid ==` the deleted uid (Stage 7; query on the automatic single-field index, one batch), releasing the Apple purchase for a re-created account. Finally deletes the profile photo `avatars/{uid}.jpg` from the default Storage bucket (Stage 8, `ignoreNotFound`; a Storage error is logged as a warning and does not fail the Firestore clean-up, which is already committed). |
 | `redeemFamilyPass` | **Callable** (v2 `onCall`, region `australia-southeast1`, App Check not enforced), input `{ jws: string }` | Stage 7 (§5.1). Requires auth. Verifies the StoreKit 2 `jwsRepresentation` offline with Apple's `SignedDataVerifier` (bundle id `com.skyline.pinny`, environment Sandbox or Production taken from the payload and enforced against the signature, no online checks), then requires `productId == "com.skyline.pinny.family.pass"`, `type == "Non-Consumable"` and no `revocationDate` (`isValidPassTransaction` in `functions/src/pass.ts`, unit-tested). In one transaction: if `passes/{transactionId}` exists for **another** uid → error; else creates it (`{ uid, productId, redeemedAt }`, kept as-is on restore) and sets `users/{uid}.pass = { transactionId, productId, verifiedAt: serverTimestamp }` (merge). Returns `{ ok: true }`. Errors: `unauthenticated` "Sign in to redeem a purchase."; `invalid-argument` "Missing purchase data." / "Purchase data isn't readable." / "Couldn't verify the purchase."; `failed-precondition` "This purchase isn't an active Family Pass." (wrong product / type, refunded); `already-exists` "This purchase is already used by another account.". Logs uid, transactionId and environment — never the JWS. |
 | `appStoreNotifications` | **HTTPS** (v2 `onRequest`, POST `{ signedPayload }`) | App Store Server Notifications V2 (§5.1). Verifies the notification with the same verifier (`verifyAndDecodeNotification`; environment from the payload's `data.environment`). `passUpdateForNotification` (unit-tested): `REFUND` and `REVOKE` → decode `data.signedTransactionInfo`, and if it is our product, delete `passes/{transactionId}` and remove `users/{uid}.pass` **only if it still points at that transactionId** (transaction; the family the user created stays). Everything else (`TEST`, `CONSUMPTION_REQUEST`, `REFUND_REVERSED`, subscription events) is acknowledged and ignored. Responses: 200 for every verified notification, 400 for a bad signature or unreadable body (Apple retries), 405 for non-POST. Logs type, subtype, environment, notificationUUID and transactionId only. |
 
@@ -252,7 +252,8 @@ families/{familyId}/places/{placeId}      Stage 3.6, max 10 per family (client-e
 
 users/{uid}                     readable by the owner and the same family
   name: string                  1–40 UTF-16 units
-  photoURL: string?
+  photoURL: string?             ≤ 2048 chars or null; the Google picture URL seeded at first
+                                sign-in, or the download URL of avatars/{uid}.jpg (Stage 8, §6.1)
   familyId: string?             null = not in a family
   lastLocation: {
     lat: number                 -90..90
@@ -302,6 +303,25 @@ needed; `firestore.indexes.json` is intentionally empty.
 a valid 30-unit place name and 29 letters + "🏠" (31) is rejected. Swift:
 count `name.utf16.count`, not `name.count`.
 
+### 6.1 Cloud Storage (Stage 8 — profile photos)
+
+The only thing in Cloud Storage is the profile photo
+([STAGE-8-CONTRACT.md](STAGE-8-CONTRACT.md)):
+
+```
+avatars/{uid}.jpg               the project's default bucket, one object per user
+                                512×512 JPEG, client-resized (≈ 200 KB); rules: < 2 MB, image/jpeg
+```
+
+| | |
+|---|---|
+| **Bucket** | The project's default bucket (`pinny-family-4vea.firebasestorage.app`; the console shows the exact name), created once by the owner: [Firebase console → Storage](https://console.firebase.google.com/project/pinny-family-4vea/storage) → **Get started** → **Production mode** → location **`australia-southeast1`** (same region as Firestore; can't be changed later). There is no CLI to create it; until then `firebase deploy --only storage` stops with "Firebase Storage has not been set up on project 'pinny-family-4vea'" (checked 2026-09-18; the attempt also enabled the `firebasestorage.googleapis.com` API, which is harmless). Nothing else in the console needs touching. |
+| **Rules** | `firebase/storage.rules`, referenced from `firebase.json` (`storage.rules`). `avatars/{file}`: **read** by any signed-in user (family faces on pins; download URLs are unguessable anyway, and family-only would need cross-service rules); **create / update** only when `file == request.auth.uid + '.jpg'`, `size < 2 MB` and `contentType == 'image/jpeg'`; **delete** by the owner only. Every other path is denied. |
+| **Client** | Upload with `putData(_, metadata: contentType "image/jpeg")` to `avatars/{uid}.jpg`, then `downloadURL()` → `users/{uid}` update `{ photoURL: <url>, updatedAt: serverTimestamp() }` (§7). Remove photo: `delete()` the object (best effort) then `{ photoURL: null, updatedAt }`. |
+| **Server** | `onUserDeleted` deletes `avatars/{uid}.jpg` (Admin SDK, `ignoreNotFound`). No other function touches Storage. |
+| **Deploy** | `cd firebase && firebase deploy --only storage` (rules only; needs the bucket above). |
+| **Tests** | `firebase/tests/storage.test.mjs` against the Storage emulator (§10). |
+
 ## 7. Client write contracts
 
 What the iOS client writes for each action. Rules reject anything else.
@@ -328,7 +348,9 @@ What the iOS client writes for each action. Rules reject anything else.
 | Delete place | `families/{familyId}/places/{placeId}` delete (any member). |
 | Send chat message | `chats/{familyId}/messages/{id}` create `{ senderId: uid, senderName, text, type: "normal", createdAt: serverTimestamp }` — exactly these five keys. `senderName` a string 1–40 UTF-16 units; `text` 1–1000 UTF-16 units (trim first; empty is rejected; the §13.4 counter and the 1000 cap must count `text.utf16.count`); `createdAt` **must** be `serverTimestamp()`. Written as a **write-only transaction**, like location: it fails offline instead of sitting in the offline queue, and a failed send is never replayed by the SDK; only the user's retry sends it again. Make the ID client-side before the first write and reuse it on retry: messages are create-only, so a retry of a write that already landed is rejected (permission-denied) — then `getDocument` it; if it exists, mark sent (DESIGN-SPEC §13.4). No push is sent for chat messages. |
 | SOS | Make the message ID first. **1.** If there is a fix: `users/{uid}` update `lastLocation: { lat, lng, updatedAt: serverTimestamp, acc?, battery?, charging?, src: "sos" }` + `updatedAt: serverTimestamp` (same transaction write as a normal share); wait for it to commit. The fix may be the device's cached one (DESIGN-SPEC §13.3: no fresh fix within 3 s → a cached fix ≤ 2 min old), so **an SOS location can be up to 2 min older than its timestamp**; `updatedAt` is when it was shared, not when it was measured. Location off / no fix → skip this step. **2.** `chats/{familyId}/messages/{id}` create `{ senderId: uid, senderName, text: "SOS", type: "sos", createdAt: serverTimestamp }` — `text` is exactly `"SOS"` (fixed, never shown; clients draw the SOS card from `type`). Also a **write-only transaction** (never queued offline; a failed send is not replayed). Try again reuses the ID; permission-denied + document exists = already sent (one SOS, never two). `onSOSMessage` pushes to everyone else; the body says "Tap to see where they are." only if step 1 landed ≤ 60 s before the message, so a skipped step 1 (or an old SOS location) gives "Location unavailable.". The `src: "sos"` write sends no check-in push. |
-| Delete account | `Auth.auth().currentUser?.delete()` (re-authenticate first if Firebase asks). `onUserDeleted` cleans Firestore, `pushTokens/{uid}` included — no client token delete needed. Client should also clear local state. |
+| Change profile photo (Stage 8) | Storage `avatars/{uid}.jpg` **put** (JPEG, < 2 MB, `contentType: "image/jpeg"`; rules reject other names, types and sizes), then `users/{uid}` update `{ photoURL: <download URL>, updatedAt: serverTimestamp }`. `photoURL` is a string ≤ 2048 chars; a number, map or longer string is rejected. Only the owner can write either. First Google sign-in seeds `photoURL` from the Google picture URL in the create above. |
+| Remove profile photo (Stage 8) | Storage `avatars/{uid}.jpg` **delete** (best effort, owner only), then `users/{uid}` update `{ photoURL: null, updatedAt: serverTimestamp }` (`FieldValue.delete()` is accepted too). |
+| Delete account | `Auth.auth().currentUser?.delete()` (re-authenticate first if Firebase asks). `onUserDeleted` cleans Firestore, `pushTokens/{uid}` included, and the Storage photo `avatars/{uid}.jpg` — no client token or photo delete needed. Client should also clear local state. |
 
 Messages cannot be edited or deleted by clients (rules: `update, delete: false`).
 Families and invite codes cannot be deleted by clients either — server purge only.
@@ -410,6 +432,7 @@ this section if anything below changes.
 | **Leaving a family** | The leave batch clears `users/{uid}.familyId`, so from that commit the leaver can't read the family's locations and the family can't read the leaver's. The leaver's own `lastLocation` stays on their doc, visible only to them, until it is overwritten or the account is deleted. |
 | **Deletion** | Deleting the account (Settings → Delete account → Firebase Auth delete) fires `onUserDeleted`, which deletes `users/{uid}`, `lastLocation` (with battery and accuracy) included, and `pushTokens/{uid}`. This matches the Settings privacy line "Delete your account at any time to remove your account and location data." Saved places are not part of that: they are shared family data and stay with the family (see Saved places). If the user was the last member, the family is purged, places included. |
 | **Street addresses** | Never stored. The "Near 12 George St" line is geocoded on the viewer's device with Apple's geocoder (`CLGeocoder`) and held in memory only. Apple receives the coordinate for that lookup; say so in the privacy policy. |
+| **Profile photo (Stage 8)** | Optional. Either the Google profile picture URL copied at first Google sign-in, or a photo the user picks from their library (`PhotosPicker`, no library access beyond the one picture), resized on the phone to 512×512 and stored as `avatars/{uid}.jpg` in the project's Cloud Storage bucket in **Sydney**, with its download URL in `users/{uid}.photoURL`. **Visible to signed-in Pinny users** (Storage read requires sign-in; the Firestore `photoURL` follows the usual owner-or-family read rule). Used only to show the face on the map pin, member rows and chat; **never used for anything else** — no face detection, no analytics, nothing leaves Firebase. Removed by "Remove photo" (object deleted, `photoURL` null) and **deleted with the account** (`onUserDeleted` deletes the object). App Store privacy label: **Photos or Videos**, linked to user, not tracking, App Functionality. |
 | **Purchase (Stage 7)** | Apple handles payment; no card or Apple ID details ever reach Pinny. Stored: `users/{uid}.pass = { transactionId, productId, verifiedAt }` and `passes/{transactionId} = { uid, productId, redeemedAt }` — the Apple **transaction id** ties the purchase to the account and stops one purchase unlocking two accounts. Removed by `appStoreNotifications` on refund / revoke, and both docs are deleted on account deletion (`onUserDeleted`), so nothing about the purchase outlives the account. App Store privacy label: **Purchases → Purchase History**, linked to user, not tracking, App Functionality. |
 | **Copies elsewhere** | None stored. Pushes carry no coordinates: the check-in push body may carry a saved place name ("At Home.") through FCM/APNs, but it isn't saved, and push data holds only `type`, `uid` and `familyId`; chat messages store only the typed text. Functions log uids, never coordinates. **On-device cache:** the Firestore SDK keeps each member's last-seen family locations on the phone's disk (offline persistence), until overwritten by a newer snapshot or the app is deleted. Location writes don't sit in the offline write queue: the client writes them in a transaction, which fails offline and is never replayed. Open (Stage 6): call `clearPersistence()` on sign-out and account deletion so a shared or handed-down phone keeps no family locations. Firestore point-in-time recovery and backups are off (the default). Turning either on keeps past values for its retention period, so update this section if you do. |
 
@@ -428,19 +451,24 @@ only; other collected data (name, email, user ID) needs its own rows.
 
 ## 10. Testing
 
-`firebase/tests/` runs the rules against the Firestore emulator with
-`@firebase/rules-unit-testing` and `node:test` (needs Java 11+, no real
+`firebase/tests/` runs the rules against the Firestore and Storage emulators
+with `@firebase/rules-unit-testing` and `node:test` (needs Java 11+, no real
 project — uses `--project demo-familymap`). Every case in §7 has a
 should-pass test and the abuse variants have should-fail tests; the database
-is cleared before each test.
+and the bucket are cleared before each test. `rules.test.mjs` covers
+`firestore.rules`, `storage.test.mjs` covers `storage.rules` (Stage 8:
+owner upload / replace / delete, other uid, PNG, 3 MB, wrong name, path
+outside `avatars/`, unauthenticated read).
 
 ```bash
 cd firebase/tests
 npm install
-npm test        # = firebase emulators:exec --only firestore --project demo-familymap "node --test rules.test.mjs"
+npm test        # = firebase emulators:exec --only firestore,storage --project demo-familymap "node --test rules.test.mjs storage.test.mjs"
 ```
 
-Run it after any change to `firestore.rules`.
+Run it after any change to `firestore.rules` or `storage.rules`. The first run
+downloads the Storage rules runtime (`cloud-storage-rules-runtime`) next to the
+Firestore emulator jar.
 
 Functions unit tests (pure check-in, Family Pass, "inside a place", SOS-body and token-change logic, no emulator, no Apple calls):
 
@@ -468,6 +496,9 @@ firebase use --add                       # pick YOUR_FIREBASE_PROJECT_ID, alias 
 # Firestore rules + indexes
 firebase deploy --only firestore
 
+# Storage rules (§6.1; the owner creates the bucket in the console first)
+firebase deploy --only storage
+
 # Cloud Functions
 cd functions && npm install && npm run build && cd ..
 # optional, once the App Store Connect record exists (§5.1):
@@ -482,7 +513,7 @@ firebase deploy --only hosting
 firebase deploy
 
 # local emulators (rules + functions), no real project needed
-firebase emulators:start --only firestore,functions --project demo-familymap
+firebase emulators:start --only firestore,storage,functions --project demo-familymap
 
 # rules tests
 cd tests && npm install && npm test

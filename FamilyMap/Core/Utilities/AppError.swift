@@ -16,6 +16,8 @@ enum AppError {
     static let passProductsUnavailable = "Couldn't load Family Pass. Try again."
     static let restoreFailed = "Couldn't restore purchases. Try again."
     static let passNotFound = "No Family Pass found on this Apple ID."
+    // Profile photo (STAGE-8-CONTRACT §3).
+    static let photoUpdateFailed = "Couldn't update your photo. Try again."
 
     static func isOffline(_ error: Error) -> Bool {
         if let urlError = error as? URLError {

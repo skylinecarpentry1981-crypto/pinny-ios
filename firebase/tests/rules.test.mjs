@@ -210,6 +210,51 @@ describe("users", () => {
     );
   });
 
+  // Stage 8 — profile photo: photoURL is a string ≤ 2048 chars or null.
+  const PHOTO = "https://firebasestorage.googleapis.com/v0/b/demo/o/avatars%2Fuid_alice.jpg?alt=media&token=abc";
+
+  it("stage 8: create with photoURL string succeeds", async () => {
+    await assertSucceeds(setDoc(doc(db(A), "users", A), userDoc({ photoURL: PHOTO })));
+  });
+
+  it("stage 8: create with photoURL null succeeds", async () => {
+    await assertSucceeds(setDoc(doc(db(A), "users", A), userDoc({ photoURL: null })));
+  });
+
+  it("stage 8: owner sets photoURL", async () => {
+    await seedFamilyAB();
+    await assertSucceeds(updateDoc(doc(db(A), "users", A), { photoURL: PHOTO, updatedAt: serverTimestamp() }));
+  });
+
+  it("stage 8: owner clears photoURL with null", async () => {
+    await seedFamilyAB();
+    await seed((adb) => updateDoc(doc(adb, "users", A), { photoURL: PHOTO }));
+    await assertSucceeds(updateDoc(doc(db(A), "users", A), { photoURL: null, updatedAt: serverTimestamp() }));
+  });
+
+  it("stage 8: owner clears photoURL with deleteField", async () => {
+    await seedFamilyAB();
+    await seed((adb) => updateDoc(doc(adb, "users", A), { photoURL: PHOTO }));
+    await assertSucceeds(updateDoc(doc(db(A), "users", A), { photoURL: deleteField(), updatedAt: serverTimestamp() }));
+  });
+
+  it("stage 8: another uid cannot set my photoURL", async () => {
+    await seedFamilyAB();
+    await assertFails(updateDoc(doc(db(B), "users", A), { photoURL: PHOTO, updatedAt: serverTimestamp() }));
+  });
+
+  it("stage 8: non-string photoURL fails", async () => {
+    await seedFamilyAB();
+    await assertFails(updateDoc(doc(db(A), "users", A), { photoURL: 123, updatedAt: serverTimestamp() }));
+    await assertFails(updateDoc(doc(db(A), "users", A), { photoURL: { url: PHOTO }, updatedAt: serverTimestamp() }));
+  });
+
+  it("stage 8: photoURL longer than 2048 chars fails", async () => {
+    await seedFamilyAB();
+    await assertFails(updateDoc(doc(db(A), "users", A), { photoURL: "https://x/" + "a".repeat(2039), updatedAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(doc(db(A), "users", A), { photoURL: "https://x/" + "a".repeat(2038), updatedAt: serverTimestamp() }));
+  });
+
   it("owner deletes own doc", async () => {
     await seedFamilyAB();
     await assertSucceeds(deleteDoc(doc(db(A), "users", A)));

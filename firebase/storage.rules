@@ -1,0 +1,29 @@
+rules_version = '2';
+
+// Pinny — Cloud Storage security rules (Stage 8, profile photos)
+//
+// One object per user: avatars/{uid}.jpg, a 512×512 JPEG the client resizes
+// before upload (docs/STAGE-8-CONTRACT.md §2). Nothing else is allowed:
+// any path outside avatars/ is denied by default.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /avatars/{file} {
+      // Read: any signed-in Pinny user (faces on pins and member rows).
+      // Family-only would need cross-service rules; not worth it for a
+      // profile picture, and download URLs are unguessable anyway.
+      allow read: if request.auth != null;
+
+      // Create / replace: the owner only, a JPEG under 2 MB.
+      allow create, update: if request.auth != null
+        && file == request.auth.uid + '.jpg'
+        && request.resource.size < 2 * 1024 * 1024
+        && request.resource.contentType == 'image/jpeg';
+
+      // Delete: the owner only ("Remove photo"). Account deletion removes it
+      // server-side (onUserDeleted, Admin SDK, bypasses these rules).
+      allow delete: if request.auth != null
+        && file == request.auth.uid + '.jpg';
+    }
+  }
+}

@@ -318,7 +318,7 @@ Set `brandAccent` as the app-wide `.tint`. Asset catalog with Any/Dark appearanc
 - **Notification permission (priming screen body; the system alert uses Apple's fixed text)**
   `Get a heads-up when a family member checks in, and always for SOS alerts. You can change this any time in Settings.`
 - **Settings › Privacy line**
-  `Your location and battery level are shared with your family only when you open Pinny, tap Refresh or Check in, or send an SOS. There is no background tracking. Delete your account at any time to remove your account and location data.`
+  `Your location and battery level are shared with your family only when you open Pinny, tap Refresh or Check in, or send an SOS. There is no background tracking. Delete your account at any time to remove your account and location data. Your profile photo is visible to people who use Pinny with you.`
 - **Map share status:** `Sharing…` / `Shared just now` (capsule, no toast — §10.3)
 - **Empty family map:** `It's just you for now.` / `Invite your family`
 - **App name:** `Pinny` (display name; the Xcode target stays `FamilyMap`, §0).
@@ -939,3 +939,61 @@ New strings (not in §9.1; add to `AppError.userMessage`): `Couldn't load Family
 - `Family Pass` has the header trait; each benefit is one element (icon hidden); the mascot is hidden. Price line reads `A$14.99, one-time purchase`.
 - Announcements on every state change: `Confirming your purchase`, `You're all set`, `Waiting for approval`, or the failure string. Focus moves to the banner or the new title.
 - Every control ≥ 44 pt; contrast per §5 (`onAccent` on `brandAccent`, `sosRedText` only in banners' icons). Reduce Motion: no slide-in on the banner.
+
+---
+
+## 15. Stage 8 addendum — profile photos
+
+Implements STAGE-8-CONTRACT §3. A photo is optional; initials stay the default. **§3.7 amended:** the `Photo  Add ›` row is replaced by the header + rows below. **§6 amended:** the Settings › Privacy string gains one sentence (§15.5). No camera, no cropping UI — the client centre-crops the picked image to a square (contract §2).
+
+### 15.1 Settings › Profile (iPhone SE, 375 × 667)
+```
+┌──────────────────────────────┐
+│ ‹ Family      Settings       │
+├──────────────────────────────┤
+│ PROFILE                      │
+│          ╭────────╮          │  AvatarView 80 pt, centred, own row with a
+│          │        │          │  clear background; photo or initials.
+│          │   JK   │          │  Tap = Change photo (44 pt target = the
+│          │      ◉ │          │  whole row). No ring here.
+│          ╰────────╯          │  ◉ camera badge: 24 pt circle, bottom-right
+│                              │  `.systemBackground` fill, 2 pt border in the
+│ Display name        Jinho  › │  grouped bg colour, SF `camera.fill` 11 pt
+│ Change photo               › │  secondary. Decorative.
+│ Remove photo                 │  Rows: unchanged (§3.7) · `brandAccent`
+│                              │  text → PhotosPicker · `sosRedText`, only
+│ NOTIFICATIONS …              │  while `photoURL` is set. No confirmation
+└──────────────────────────────┘  for Remove — picking again undoes it.
+```
+- 80 pt is the one size outside AvatarView's three (§4); it is used here only. Section order stays §3.7 / §14.4.
+- `Change photo` → `PhotosPicker` (`.images`, single selection, `.compatible` encoding). Cancel shows nothing.
+
+### 15.2 States
+| State | What shows | Notes |
+|---|---|---|
+| Picking | The system picker; Settings unchanged underneath | Cancel or no selection → nothing. |
+| Uploading | The picked image replaces the avatar at 50 % opacity with a centred `ProgressView` (`.circular`, `onAccent` on a 32 pt `brandAccent`-15 % disc for contrast) · `Change photo` and `Remove photo` disabled · Display name stays enabled | Covers resize + Storage put + the `photoURL` write. 15 s timeout = failure. Leaving Settings does not cancel it. |
+| Success | Avatar shows the new photo at full opacity; rows re-enable; `Remove photo` appears | `.success` haptic; no toast, the avatar is the confirmation. Pins, rows and bubbles pick up the new `photoURL` on their next render. |
+| Failed | Previous avatar restored (old photo or initials) · ErrorBanner at the top of Settings `Couldn't update your photo. Try again.` · offline: §9.1 `You're offline. Check your connection.` | `.error` haptic; rows re-enable. Retry = `Change photo` again. |
+| Removing | Avatar dims to 50 % with the same spinner; both rows disabled | Best-effort Storage delete + `photoURL: null`. Done → initials, `.success` haptic. Failed → same banner as above. |
+
+New string for `AppError.userMessage`: `Couldn't update your photo. Try again.` (both upload and remove).
+
+### 15.3 Google sign-in
+- First Google sign-in seeds `photoURL` from the Google account (contract §1); the avatar simply shows it — no prompt, no banner. Apple and email sign-ins start with initials.
+- Override: `Change photo` uploads a new one and replaces the URL; `Remove photo` sets `photoURL` to null. Neither re-seeds later — the Google picture is copied once, on first sign-in, and never comes back on its own.
+
+### 15.4 AvatarView (§4 rules, unchanged sizes)
+- **Photo:** `AsyncImage` from `photoURL`, `.scaledToFill()` and clipped to the circle (centre-cropped, no letterboxing); `.small` 32 / `.medium` 40 / `.large` 56 pt as before. Cache via `URLCache` (shared cache is fine; `.returnCacheDataElseLoad`).
+- **Loading and failure:** initials in the member's hue show until the image arrives, and stay if it fails — no spinner, no grey box, no size change. A failed load retries only on the next render or when `photoURL` changes.
+- **Rings:** `none` / `brandAccent` / `staleGrey` draw outside the photo exactly as they do around initials. Stale pins keep their 50 % opacity and grey ring (§10.4) — the photo dims with the pin.
+- **Map pins (§10.4):** 40 pt photo inside the 2 pt white ring + shadow; label capsule unchanged. Drawer rows (§11.4), member rows (§3.6) and chat avatars (§13.4) are all the same component — nothing else moves.
+
+### 15.5 Privacy
+- Settings › Privacy (§6) gains this final sentence: `Your profile photo is visible to people who use Pinny with you.`
+- The photo is stored with the account (Sydney), readable by signed-in users of the app, replaced on change and deleted with the account (§9.4) — the same lifecycle as the display name. No EXIF or location leaves the device: the resize writes a fresh JPEG.
+
+### 15.6 Accessibility
+- Settings avatar: one button, label = the display name only (`Jinho`), hint `Double-tap to change your photo`; the camera badge is hidden. Uploading adds `, updating photo` and the `.notEnabled` trait; the ErrorBanner is announced and takes focus (§9).
+- Everywhere else the avatar is decorative (`accessibilityHidden(true)`) — the pin (§10.4), row (§11.10) and bubble (§13.6) elements already read the name.
+- `Change photo` / `Remove photo` are plain buttons; Dynamic Type: the 80 pt avatar does not scale, rows wrap. Reduce Motion: no fade between initials and photo — swap in place.

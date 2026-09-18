@@ -15,6 +15,7 @@
 import { initializeApp } from "firebase-admin/app";
 import { Timestamp, getFirestore } from "firebase-admin/firestore";
 import { getMessaging } from "firebase-admin/messaging";
+import { getStorage } from "firebase-admin/storage";
 import { logger } from "firebase-functions";
 import { setGlobalOptions } from "firebase-functions/v2";
 import { onDocumentCreated, onDocumentUpdated, onDocumentWritten } from "firebase-functions/v2/firestore";
@@ -379,6 +380,15 @@ export const onUserDeleted = functionsV1
       const batch = db.batch();
       for (const d of passes.docs) batch.delete(d.ref);
       await batch.commit();
+    }
+
+    // Stage 8: the profile photo, avatars/{uid}.jpg in the default bucket.
+    // Best effort: the Firestore clean-up above is already committed, and the
+    // bucket may not exist yet on a fresh project (BACKEND-SETUP §6.1).
+    try {
+      await getStorage().bucket().file(`avatars/${uid}.jpg`).delete({ ignoreNotFound: true });
+    } catch (err) {
+      logger.warn("onUserDeleted: could not delete profile photo", { uid, err: String(err) });
     }
 
     logger.info("user cleaned up", { uid, familyId, passesReleased: passes.size });
