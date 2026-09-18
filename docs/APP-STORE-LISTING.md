@@ -140,7 +140,7 @@ Contact: the owner's phone and email. Attach nothing else; the IAP has its own s
 |---|---|---|
 | Type | Non-Consumable | |
 | Reference name | `Family Pass` | 64 |
-| Product ID | `com.skyline.pinny.familypass` | |
+| Product ID | `com.skyline.pinny.family.pass` | |
 | Price | owner picks the tier nearest A$14.99; Apple converts for other storefronts | |
 | Availability | all territories | |
 | Display name (en-AU / en-US) | `Family Pass` | 30 |

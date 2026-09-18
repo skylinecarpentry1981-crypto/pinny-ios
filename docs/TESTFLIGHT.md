@@ -280,7 +280,7 @@ Hardcoding `production` would break Debug signing, so it isn't done.
 | 15 | New build before the 90-day expiry | Owner / Claude | Ongoing |
 | H0 | Stage 7 backend: rules (`pass`, `passes`, family create gate), `redeemFamilyPass`, `appStoreNotifications`, Apple root certs, tests | Claude | Done |
 | H1 | Paid Apps Agreement: agree, bank account, tax forms, contact info → status Active | Owner (Account Holder) | Done (already active from earlier apps) |
-| H2 | Create the non-consumable IAP `com.skyline.pinny.familypass` (price A$14.99, localisation, review screenshot) | Owner | To do |
+| H2 | Create the non-consumable IAP `com.skyline.pinny.family.pass` (the first attempt `…familypass` was created as Consumable by mistake; deleted IDs can't be reused) (price A$14.99, localisation, review screenshot) | Owner | To do |
 | H3 | Attach the IAP to the first App Store version | Owner | To do |
 | H4 | App Store Server Notifications URL (Sandbox + Production, V2) → send test notification; Claude checks the log | Owner → Claude | To do |
 | H5 | Give Claude the numeric Apple ID → `APP_APPLE_ID` in `functions/.env` → redeploy functions | Owner → Claude | To do |
@@ -320,7 +320,7 @@ Stage 7 ([STAGE-7-CONTRACT.md](STAGE-7-CONTRACT.md)): one non-consumable in-app 
 
 | Name | Value |
 |---|---|
-| Product ID | `com.skyline.pinny.familypass` (fixed in the app and the server; can't be changed after creation) |
+| Product ID | `com.skyline.pinny.family.pass` (fixed in the app and the server; can't be changed after creation) |
 | Type | Non-Consumable |
 | Reference name (internal) | `Family Pass` |
 | Display name (App Store, English) | `Family Pass` |

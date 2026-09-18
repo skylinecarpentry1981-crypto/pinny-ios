@@ -15,7 +15,7 @@
           "locale" : "en_AU"
         }
       ],
-      "productID" : "com.skyline.pinny.familypass",
+      "productID" : "com.skyline.pinny.family.pass",
       "referenceName" : "Family Pass",
       "type" : "NonConsumable"
     }

@@ -417,7 +417,7 @@ def cmd_status(_args):
     try:
         iaps = c.get_all(f"/v1/apps/{app_id}/inAppPurchasesV2", {"limit": 200})
         if not iaps:
-            print("  none (create 'Family Pass', product id com.skyline.pinny.familypass)")
+            print("  none (create 'Family Pass', product id com.skyline.pinny.family.pass)")
         for i in iaps:
             ia = i["attributes"]
             print(f"  {ia.get('productId')}: {ia.get('inAppPurchaseType')} / {ia.get('state')}")

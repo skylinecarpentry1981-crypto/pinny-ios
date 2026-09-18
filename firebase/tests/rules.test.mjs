@@ -42,7 +42,7 @@ const CODE = "ABC123";
 const CODE2 = "ZZZ999";
 /** users/{uid}.pass as redeemFamilyPass writes it (Stage 7). */
 const TXN = "2000000123456789";
-const PASS = { transactionId: TXN, productId: "com.skyline.pinny.familypass", verifiedAt: new Date() };
+const PASS = { transactionId: TXN, productId: "com.skyline.pinny.family.pass", verifiedAt: new Date() };
 
 let env;
 // One Firestore instance per uid (batch refs must share an instance).

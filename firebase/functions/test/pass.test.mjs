@@ -15,8 +15,8 @@ const pass = (extra = {}) => ({
   ...extra,
 });
 
-it("product id is com.skyline.pinny.familypass", () => {
-  assert.equal(PASS_PRODUCT_ID, "com.skyline.pinny.familypass");
+it("product id is com.skyline.pinny.family.pass", () => {
+  assert.equal(PASS_PRODUCT_ID, "com.skyline.pinny.family.pass");
 });
 
 it("our non-consumable, not revoked -> valid", () => {

@@ -33,7 +33,7 @@ import type {
   ResponseBodyV2DecodedPayload,
 } from "@apple/app-store-server-library";
 
-export const PASS_PRODUCT_ID = "com.skyline.pinny.familypass";
+export const PASS_PRODUCT_ID = "com.skyline.pinny.family.pass";
 const BUNDLE_ID = "com.skyline.pinny";
 const REGION = "australia-southeast1";
 const MAX_JWS_LENGTH = 32 * 1024; // Apple JWS payloads are a few KB

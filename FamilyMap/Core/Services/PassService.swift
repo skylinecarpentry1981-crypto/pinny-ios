@@ -65,7 +65,7 @@ final class PassService: ObservableObject {
         case failed(String)
     }
 
-    static let productId = "com.skyline.pinny.familypass"
+    static let productId = "com.skyline.pinny.family.pass"
     static let region = "australia-southeast1"
 
     @Published private(set) var products: [Product] = []

@@ -4,7 +4,7 @@ Owner decisions (2026-09-18): sell Pinny to everyone, worldwide. Distribution = 
 
 ## 1. Product
 
-- One **non-consumable** IAP: product id `com.skyline.pinny.familypass`, display name "Family Pass", reference price tier ≈ A$14.99 (owner sets the exact tier in App Store Connect).
+- One **non-consumable** IAP: product id `com.skyline.pinny.family.pass`, display name "Family Pass", reference price tier ≈ A$14.99 (owner sets the exact tier in App Store Connect).
 - **One purchase unlocks one family.** Only the person who **creates** a family needs the pass. Joining with an invite code is free and unlimited.
 - The pass is tied to the purchaser's Apple ID (Apple rule). Restore purchases must work (Apple requirement).
 - No subscription, no trial, no other products in Stage 7.
