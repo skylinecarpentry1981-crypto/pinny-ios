@@ -1,6 +1,6 @@
-# Stage 7 — Family Pass (in-app purchase) + unlisted App Store distribution
+# Stage 7 — Family Pass (in-app purchase) + worldwide App Store release
 
-Owner decisions (2026-09-18): sell Pinny privately to acquaintances. Distribution = App Store **unlisted** (link-only, not searchable, real payments). Payment = Apple **In-App Purchase** (StoreKit 2); Apple Pay cards work through the normal App Store payment sheet. This contract is the single source of truth for Designer, Frontend, Backend and Overseer.
+Owner decisions (2026-09-18): sell Pinny to everyone, worldwide. Distribution = **public App Store listing, all territories**, English UI (other languages later). Payment = Apple **In-App Purchase** (StoreKit 2); Apple Pay cards work through the normal App Store payment sheet. This contract is the single source of truth for Designer, Frontend, Backend and Overseer.
 
 ## 1. Product
 
@@ -22,7 +22,8 @@ Owner decisions (2026-09-18): sell Pinny privately to acquaintances. Distributio
 
 - Paid Apps Agreement in App Store Connect (Account Holder; banking + tax forms) — required before any IAP works, even in TestFlight sandbox after a point.
 - Create the IAP in App Store Connect (non-consumable, product id above, price, localisation, review screenshot) and submit it with the first app version.
-- Request **unlisted distribution** via Apple's form after the app is ready for review; the app still goes through App Review. Provide a demo account that already holds a pass.
+- Public listing: availability = all territories; price of the IAP set once in the base currency and auto-converted by Apple's price tiers. Listing assets per TESTFLIGHT.md §G (screenshots, description, keywords, age rating, App Privacy answers). Provide a demo account that already holds a pass for App Review.
+- Privacy page: state that data is stored in Australia (Sydney) and that the app is offered worldwide; keep the existing deletion wording (GDPR/UK/APP: access + deletion via in-app delete and the support email).
 - TestFlight: purchases are sandbox (free) — good for testing the flow.
 - Apple Small Business Program (15% commission) — owner applies.
 
